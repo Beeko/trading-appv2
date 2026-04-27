@@ -7,6 +7,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import httpx
 import pandas as pd
 from loguru import logger
 
@@ -34,6 +35,8 @@ _TF_MAP = {
 class AlpacaClient:
     def __init__(self, api_key: str, secret_key: str, paper: bool = True):
         self.paper = paper
+        self._api_key = api_key
+        self._secret_key = secret_key
         self.trading = TradingClient(api_key, secret_key, paper=paper)
         self.data = StockHistoricalDataClient(api_key, secret_key)
 
@@ -301,7 +304,12 @@ class AlpacaClient:
         req = GetOptionContractsRequest(**params)
         try:
             resp = await asyncio.to_thread(self.trading.get_option_contracts, req)
-            contracts = list(resp)
+            # resp is a Pydantic response model — option_contracts holds the list
+            if hasattr(resp, "option_contracts") and resp.option_contracts is not None:
+                contracts = list(resp.option_contracts)
+            else:
+                logger.warning(f"Unexpected option contracts response shape: {type(resp)}")
+                contracts = []
             result = []
             for c in contracts:
                 ctype = None
@@ -351,31 +359,43 @@ class AlpacaClient:
     # ── screener ──────────────────────────────────────────────────────────────
 
     async def get_most_actives(self, top: int = 50) -> list[str]:
-        """Most active US equities by volume."""
+        """Most active US equities by volume (Alpaca Data screener API)."""
+        url = "https://data.alpaca.markets/v1beta1/screener/stocks/most-actives"
+        headers = {
+            "APCA-API-KEY-ID": self._api_key,
+            "APCA-API-SECRET-KEY": self._secret_key,
+        }
         try:
-            from alpaca.data.requests import MostActivesRequest
-        except ImportError:
-            logger.warning("MostActivesRequest unavailable — upgrade alpaca-py")
-            return []
-        req = MostActivesRequest(top=top, by="volume")
-        try:
-            resp = await asyncio.to_thread(self.data.get_stock_most_actives, req)
-            return [item.symbol for item in (resp.most_actives or [])]
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    url, headers=headers,
+                    params={"top": top, "by": "volume"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return [item["symbol"] for item in data.get("most_actives", [])]
         except Exception as e:
             logger.warning(f"get_most_actives failed: {e}")
             return []
 
     async def get_top_gainers(self, top: int = 25) -> list[str]:
-        """Top gaining US equities by % change today."""
+        """Top gaining US equities by % change today (Alpaca Data screener API)."""
+        url = "https://data.alpaca.markets/v1beta1/screener/stocks/movers"
+        headers = {
+            "APCA-API-KEY-ID": self._api_key,
+            "APCA-API-SECRET-KEY": self._secret_key,
+        }
         try:
-            from alpaca.data.requests import MoversRequest
-        except ImportError:
-            logger.warning("MoversRequest unavailable — upgrade alpaca-py")
-            return []
-        req = MoversRequest(top=top)
-        try:
-            resp = await asyncio.to_thread(self.data.get_stock_movers, req)
-            return [m.symbol for m in (resp.gainers or [])]
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    url, headers=headers,
+                    params={"top": top, "market_type": "stocks"},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                return [item["symbol"] for item in data.get("gainers", [])]
         except Exception as e:
             logger.warning(f"get_top_gainers failed: {e}")
             return []
