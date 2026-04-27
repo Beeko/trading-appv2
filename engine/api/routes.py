@@ -1,9 +1,34 @@
 """FastAPI routes. All shared resources (alpaca client, engine, repo, config)
 are accessed via request.app.state."""
+import math
+import time as _time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+
+from indicators.technical import (
+    bollinger_bands,
+    calculate_signals,
+    ema,
+    macd as _macd,
+    rsi as _rsi,
+)
+
+# Module-level TTL cache keyed by "SYMBOL:timeframe:limit"
+_indicator_cache: dict[str, tuple[float, dict]] = {}
+_INDICATOR_TTL = 60  # seconds
+
+
+def _series_to_list(series) -> list:
+    out = []
+    for v in series:
+        try:
+            f = float(v)
+            out.append(None if math.isnan(f) else round(f, 4))
+        except (TypeError, ValueError):
+            out.append(None)
+    return out
 
 router = APIRouter()
 
@@ -145,6 +170,73 @@ async def liquidate_all(req: LiquidateRequest, request: Request):
     await request.app.state.alpaca.close_all_positions()
     await request.app.state.repo.log_event("liquidate_all", "via API")
     return {"ok": True}
+
+
+# ── indicator charts ──────────────────────────────────────────────────────────
+
+@router.get("/indicators/{symbol}")
+async def get_indicators(
+    symbol: str,
+    request: Request,
+    timeframe: str = "1Day",
+    limit: int = 100,
+):
+    symbol = symbol.upper().strip()
+    cache_key = f"{symbol}:{timeframe}:{limit}"
+    now = _time.monotonic()
+    if cache_key in _indicator_cache:
+        cached_at, cached_data = _indicator_cache[cache_key]
+        if now - cached_at < _INDICATOR_TTL:
+            return cached_data
+
+    df = await request.app.state.alpaca.get_bars(
+        symbol, timeframe=timeframe, limit=limit
+    )
+    if df is None or df.empty:
+        raise HTTPException(404, f"No bar data for {symbol}")
+
+    close = df["close"].astype(float)
+    macd_line, sig_line, histogram = _macd(close)
+    rsi_vals = _rsi(close)
+    bb_upper, bb_mid, bb_lower = bollinger_bands(close)
+    ema9 = ema(close, 9)
+    ema21 = ema(close, 21)
+
+    signal = calculate_signals(df, symbol)
+    timestamps = [ts.isoformat() for ts in df.index]
+
+    result = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "timestamps": timestamps,
+        "ohlcv": {
+            "open": _series_to_list(df["open"].astype(float)),
+            "high": _series_to_list(df["high"].astype(float)),
+            "low": _series_to_list(df["low"].astype(float)),
+            "close": _series_to_list(close),
+            "volume": [int(v) for v in df["volume"]],
+        },
+        "indicators": {
+            "ema9": _series_to_list(ema9),
+            "ema21": _series_to_list(ema21),
+            "bb_upper": _series_to_list(bb_upper),
+            "bb_mid": _series_to_list(bb_mid),
+            "bb_lower": _series_to_list(bb_lower),
+            "macd_line": _series_to_list(macd_line),
+            "macd_signal": _series_to_list(sig_line),
+            "macd_hist": _series_to_list(histogram),
+            "rsi": _series_to_list(rsi_vals),
+        },
+        "signal": {
+            "score": signal.score,
+            "signals": signal.signals,
+            "rsi": round(signal.rsi, 2),
+            "volume_ratio": round(signal.volume_ratio, 2),
+            "price": round(signal.price, 4),
+        },
+    }
+    _indicator_cache[cache_key] = (now, result)
+    return result
 
 
 # ── screener ─────────────────────────────────────────────────────────────────

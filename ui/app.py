@@ -7,6 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
 
 ENGINE_URL = os.getenv("ENGINE_URL", "http://localhost:8000")
@@ -140,7 +141,7 @@ with st.sidebar:
 
 st.title("📊 Trading Dashboard")
 
-tabs = st.tabs(["Portfolio", "Live Signals", "Trade Log", "Events", "Config"])
+tabs = st.tabs(["Portfolio", "Live Signals", "Charts", "Trade Log", "Events", "Config"])
 
 # ── Portfolio tab ─────────────────────────────────────────────────────────────
 
@@ -234,9 +235,169 @@ with tabs[1]:
         st.caption("No history yet")
 
 
-# ── Trade Log tab ─────────────────────────────────────────────────────────────
+# ── Charts tab ────────────────────────────────────────────────────────────────
 
 with tabs[2]:
+    if "chart_data" not in st.session_state:
+        st.session_state.chart_data = None
+    if "chart_symbol" not in st.session_state:
+        st.session_state.chart_symbol = ""
+
+    # Quick-pick from last scan
+    current_for_chart = _get("/signals/current") or []
+    top_sigs = sorted(current_for_chart, key=lambda s: s.get("score", 0), reverse=True)[:8]
+    if top_sigs:
+        st.caption("Quick-pick from last scan (sorted by score):")
+        qcols = st.columns(len(top_sigs))
+        for i, sig in enumerate(top_sigs):
+            label = f"{sig['symbol']} ({sig.get('score', 0):+d})"
+            if qcols[i].button(label, key=f"qs_{sig['symbol']}"):
+                st.session_state.chart_symbol = sig["symbol"]
+                st.session_state.chart_data = None
+                st.rerun()
+
+    c1, c2, c3 = st.columns([3, 2, 2])
+    with c1:
+        sym_input = st.text_input(
+            "Symbol", value=st.session_state.chart_symbol, key="chart_sym_input"
+        )
+    with c2:
+        tf_input = st.selectbox(
+            "Timeframe", ["1Day", "1Hour", "15Min", "5Min"], key="chart_tf"
+        )
+    with c3:
+        limit_input = st.selectbox("Bars", [50, 100, 200], index=1, key="chart_limit")
+
+    if st.button("View Chart", type="primary"):
+        sym = sym_input.upper().strip() if sym_input else ""
+        if not sym:
+            st.warning("Enter a symbol first")
+        else:
+            st.session_state.chart_symbol = sym
+            data = _get(f"/indicators/{sym}", timeframe=tf_input, limit=limit_input)
+            if data and "ohlcv" in data:
+                st.session_state.chart_data = data
+            else:
+                st.error(f"No indicator data returned for {sym}")
+                st.session_state.chart_data = None
+
+    chart = st.session_state.chart_data
+    if chart:
+        ts = chart["timestamps"]
+        ohlcv = chart["ohlcv"]
+        ind = chart["indicators"]
+        sig = chart["signal"]
+
+        score = sig["score"]
+        score_color = "green" if score >= 3 else ("orange" if score >= 0 else "red")
+        st.markdown(
+            f"**{chart['symbol']}** &nbsp;|&nbsp; "
+            f"Score: <span style='color:{score_color}'>{score:+d}</span> &nbsp;|&nbsp; "
+            f"RSI: {sig['rsi']:.1f} &nbsp;|&nbsp; "
+            f"Vol ratio: {sig['volume_ratio']:.1f}x &nbsp;|&nbsp; "
+            f"Price: ${sig['price']:,.2f}",
+            unsafe_allow_html=True,
+        )
+        if sig.get("signals"):
+            st.caption("Signals: " + " · ".join(sig["signals"]))
+
+        fig = make_subplots(
+            rows=3, cols=1,
+            shared_xaxes=True,
+            row_heights=[0.60, 0.25, 0.15],
+            vertical_spacing=0.03,
+            subplot_titles=("Price  ·  Bollinger Bands  ·  EMA 9/21", "MACD", "RSI"),
+        )
+
+        # Price candles
+        fig.add_trace(go.Candlestick(
+            x=ts,
+            open=ohlcv["open"], high=ohlcv["high"],
+            low=ohlcv["low"], close=ohlcv["close"],
+            name="Price",
+            increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+        ), row=1, col=1)
+
+        # Bollinger Bands (filled region)
+        fig.add_trace(go.Scatter(
+            x=ts, y=ind["bb_upper"],
+            line=dict(color="rgba(100,100,220,0.5)", width=1),
+            name="BB Upper", showlegend=False,
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=ts, y=ind["bb_lower"],
+            line=dict(color="rgba(100,100,220,0.5)", width=1),
+            fill="tonexty", fillcolor="rgba(100,100,220,0.07)",
+            name="BB Lower", showlegend=False,
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=ts, y=ind["bb_mid"],
+            line=dict(color="rgba(100,100,220,0.5)", width=1, dash="dot"),
+            name="BB Mid", showlegend=False,
+        ), row=1, col=1)
+
+        # EMA lines
+        fig.add_trace(go.Scatter(
+            x=ts, y=ind["ema9"],
+            line=dict(color="#ffa500", width=1.5),
+            name="EMA 9",
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=ts, y=ind["ema21"],
+            line=dict(color="#00bcd4", width=1.5),
+            name="EMA 21",
+        ), row=1, col=1)
+
+        # MACD histogram (green above zero, red below)
+        hist_colors = ["#26a69a" if (v or 0) >= 0 else "#ef5350" for v in ind["macd_hist"]]
+        fig.add_trace(go.Bar(
+            x=ts, y=ind["macd_hist"],
+            marker_color=hist_colors,
+            name="Histogram", showlegend=False,
+        ), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=ts, y=ind["macd_line"],
+            line=dict(color="#2196f3", width=1.5),
+            name="MACD",
+        ), row=2, col=1)
+        fig.add_trace(go.Scatter(
+            x=ts, y=ind["macd_signal"],
+            line=dict(color="#ff9800", width=1.5),
+            name="Signal",
+        ), row=2, col=1)
+
+        # RSI + reference lines at 70 / 30
+        fig.add_trace(go.Scatter(
+            x=ts, y=ind["rsi"],
+            line=dict(color="#9c27b0", width=1.5),
+            name="RSI",
+        ), row=3, col=1)
+        valid_ts = [t for t, v in zip(ts, ind["rsi"]) if v is not None]
+        if valid_ts:
+            for level, color in [(70, "#ef5350"), (30, "#26a69a")]:
+                fig.add_trace(go.Scatter(
+                    x=[valid_ts[0], valid_ts[-1]], y=[level, level],
+                    line=dict(color=color, width=1, dash="dash"),
+                    showlegend=False,
+                ), row=3, col=1)
+
+        fig.update_layout(
+            height=720,
+            template="plotly_dark",
+            margin=dict(l=10, r=10, t=40, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        fig.update_xaxes(rangeslider_visible=False)
+        fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+        fig.update_yaxes(title_text="MACD", row=2, col=1)
+        fig.update_yaxes(title_text="RSI", row=3, col=1, range=[0, 100])
+
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# ── Trade Log tab ─────────────────────────────────────────────────────────────
+
+with tabs[3]:
     st.subheader("Trade History")
     trades = _get("/trades", limit=200) or []
     if trades:
@@ -262,7 +423,7 @@ with tabs[2]:
 
 # ── Events tab ────────────────────────────────────────────────────────────────
 
-with tabs[3]:
+with tabs[4]:
     st.subheader("Engine Events")
     events = _get("/events", limit=100) or []
     if events:
@@ -274,7 +435,7 @@ with tabs[3]:
 
 # ── Config tab ────────────────────────────────────────────────────────────────
 
-with tabs[4]:
+with tabs[5]:
     st.subheader("Active Configuration")
     cfg = _get("/config") or {}
     st.json(cfg)
