@@ -147,6 +147,25 @@ async def liquidate_all(req: LiquidateRequest, request: Request):
     return {"ok": True}
 
 
+# ── screener ─────────────────────────────────────────────────────────────────
+
+@router.get("/screener/symbols")
+async def screener_symbols(request: Request):
+    cfg = request.app.state.config.screener
+    if not cfg.get("enabled", False):
+        return {"enabled": False, "symbols": []}
+    try:
+        symbols = await request.app.state.engine._screener.get_symbols(
+            top_n=int(cfg.get("top_n", 50)),
+            include_gainers=bool(cfg.get("include_gainers", True)),
+            min_price=float(cfg.get("min_price", 5.0)),
+            max_price=float(cfg.get("max_price", 500.0)),
+        )
+        return {"enabled": True, "count": len(symbols), "symbols": symbols}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 # ── config ───────────────────────────────────────────────────────────────────
 
 @router.get("/config")

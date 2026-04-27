@@ -21,6 +21,7 @@ from loguru import logger
 
 from data.alpaca_client import AlpacaClient
 from data.reddit_scanner import RedditScanner
+from data.screener import MarketScreener
 from indicators.technical import SignalScore
 from risk.manager import RiskManager
 from strategies.wsb_momentum import WSBMomentumStrategy
@@ -40,6 +41,7 @@ class TradingEngine:
         self._reddit: Optional[RedditScanner] = None
         self._tradable_symbols_cache: Optional[set[str]] = None
         self._last_scan_signals: list[SignalScore] = []
+        self._screener = MarketScreener(client)
 
         if (
             settings.reddit_client_id
@@ -186,31 +188,47 @@ class TradingEngine:
 
     async def _build_watchlist(self) -> list[str]:
         default = list(self.config.trading.get("watchlist", []))
-        if self._reddit is None or not self.config.wsb_scanner.get("enabled", False):
+
+        # Screener takes priority — replaces static list when enabled
+        if self.config.screener.get("enabled", False):
+            cfg = self.config.screener
+            try:
+                symbols = await self._screener.get_symbols(
+                    top_n=int(cfg.get("top_n", 50)),
+                    include_gainers=bool(cfg.get("include_gainers", True)),
+                    min_price=float(cfg.get("min_price", 5.0)),
+                    max_price=float(cfg.get("max_price", 500.0)),
+                )
+                if symbols:
+                    return symbols
+                logger.warning("Screener returned no symbols, falling back to static watchlist")
+            except Exception as e:
+                logger.warning(f"Screener error, falling back to static watchlist: {e}")
             return default
 
-        if self._tradable_symbols_cache is None:
-            self._tradable_symbols_cache = await self.client.get_tradable_symbols()
+        # WSB scanner merges on top of static list
+        if self._reddit is not None and self.config.wsb_scanner.get("enabled", False):
+            if self._tradable_symbols_cache is None:
+                self._tradable_symbols_cache = await self.client.get_tradable_symbols()
+            try:
+                counter = await self._reddit.get_trending_tickers(
+                    subreddit="wallstreetbets",
+                    limit=100,
+                    valid_symbols=self._tradable_symbols_cache or None,
+                )
+            except Exception as e:
+                logger.warning(f"WSB scan failed, using default watchlist: {e}")
+                return default
+            min_mentions = int(self.config.wsb_scanner.get("min_mentions", 3))
+            max_n = int(self.config.wsb_scanner.get("max_tickers", 25))
+            trending = [t for t, c in counter.most_common(max_n) if c >= min_mentions]
+            if not trending:
+                return default
+            logger.info(f"WSB trending: {trending}")
+            merged = list(dict.fromkeys(trending + default))[:max_n]
+            return merged
 
-        try:
-            counter = await self._reddit.get_trending_tickers(
-                subreddit="wallstreetbets",
-                limit=100,
-                valid_symbols=self._tradable_symbols_cache or None,
-            )
-        except Exception as e:
-            logger.warning(f"WSB scan failed, using default watchlist: {e}")
-            return default
-
-        min_mentions = int(self.config.wsb_scanner.get("min_mentions", 3))
-        max_n = int(self.config.wsb_scanner.get("max_tickers", 25))
-        trending = [t for t, c in counter.most_common(max_n) if c >= min_mentions]
-        if not trending:
-            return default
-        logger.info(f"WSB trending: {trending}")
-        # Merge with default to keep some always-on coverage
-        merged = list(dict.fromkeys(trending + default))[:max_n]
-        return merged
+        return default
 
     # ── scoring ───────────────────────────────────────────────────────────────
 

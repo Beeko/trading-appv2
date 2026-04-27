@@ -259,6 +259,62 @@ class AlpacaClient:
     async def close_all_positions(self) -> None:
         await asyncio.to_thread(self.trading.close_all_positions, cancel_orders=True)
 
+    # ── screener ──────────────────────────────────────────────────────────────
+
+    async def get_most_actives(self, top: int = 50) -> list[str]:
+        """Most active US equities by volume."""
+        try:
+            from alpaca.data.requests import MostActivesRequest
+        except ImportError:
+            logger.warning("MostActivesRequest unavailable — upgrade alpaca-py")
+            return []
+        req = MostActivesRequest(top=top, by="volume")
+        try:
+            resp = await asyncio.to_thread(self.data.get_stock_most_actives, req)
+            return [item.symbol for item in (resp.most_actives or [])]
+        except Exception as e:
+            logger.warning(f"get_most_actives failed: {e}")
+            return []
+
+    async def get_top_gainers(self, top: int = 25) -> list[str]:
+        """Top gaining US equities by % change today."""
+        try:
+            from alpaca.data.requests import MoversRequest
+        except ImportError:
+            logger.warning("MoversRequest unavailable — upgrade alpaca-py")
+            return []
+        req = MoversRequest(top=top)
+        try:
+            resp = await asyncio.to_thread(self.data.get_stock_movers, req)
+            return [m.symbol for m in (resp.gainers or [])]
+        except Exception as e:
+            logger.warning(f"get_top_gainers failed: {e}")
+            return []
+
+    async def filter_symbols_by_price(
+        self, symbols: list[str], min_price: float = 5.0, max_price: float = 500.0
+    ) -> list[str]:
+        """Return only symbols whose latest trade price is within [min_price, max_price]."""
+        if not symbols:
+            return []
+        filtered: list[str] = []
+        for i in range(0, len(symbols), 50):
+            batch = symbols[i : i + 50]
+            try:
+                req = StockLatestTradeRequest(symbol_or_symbols=batch)
+                resp = await asyncio.to_thread(self.data.get_stock_latest_trade, req)
+                for sym in batch:
+                    trade = resp.get(sym)
+                    if trade is None:
+                        continue
+                    price = float(trade.price)
+                    if min_price <= price <= max_price:
+                        filtered.append(sym)
+            except Exception as e:
+                logger.warning(f"filter_symbols_by_price batch failed: {e}")
+                filtered.extend(batch)  # include on error to avoid silent drops
+        return filtered
+
     # ── tradable assets (used to validate WSB tickers) ────────────────────────
 
     async def get_tradable_symbols(self) -> set[str]:

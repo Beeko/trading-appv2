@@ -82,5 +82,9 @@ class TradingConfig:
     def wsb_scanner(self) -> dict:
         return self._raw.get("wsb_scanner", {})
 
+    @property
+    def screener(self) -> dict:
+        return self._raw.get("screener", {})
+
     def raw(self) -> dict:
         return self._raw

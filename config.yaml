@@ -57,6 +57,13 @@ strategy:
   lookback_bars: 100    # bars of OHLCV history to fetch per symbol
   bar_timeframe: "1Day" # 1Min | 5Min | 15Min | 1Hour | 1Day
 
+screener:
+  enabled: false       # true = dynamic watchlist from Alpaca most-actives/gainers
+  top_n: 50            # max symbols to return
+  include_gainers: true  # also pull top daily % gainers
+  min_price: 5.0       # filter out sub-penny and micro-cap noise
+  max_price: 500.0     # filter out very high-priced stocks
+
 wsb_scanner:
   enabled: false          # set to true once Reddit credentials are in .env
   max_tickers: 25         # top N trending WSB tickers to use as watchlist

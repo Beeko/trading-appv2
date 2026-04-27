@@ -189,6 +189,31 @@ with tabs[0]:
 # ── Live Signals tab ──────────────────────────────────────────────────────────
 
 with tabs[1]:
+    cfg = _get("/config") or {}
+    screener_cfg = cfg.get("screener", {})
+    wsb_cfg = cfg.get("wsb_scanner", {})
+
+    if screener_cfg.get("enabled"):
+        st.info(
+            f"Watchlist source: **Alpaca Screener** "
+            f"(top {screener_cfg.get('top_n', 50)}, "
+            f"${screener_cfg.get('min_price', 5)}–${screener_cfg.get('max_price', 500)})"
+        )
+        with st.expander("Preview screener symbols"):
+            screener_data = _get("/screener/symbols") or {}
+            syms = screener_data.get("symbols", [])
+            if syms:
+                cols = st.columns(5)
+                for i, sym in enumerate(syms):
+                    cols[i % 5].code(sym)
+            else:
+                st.caption("No symbols returned yet")
+    elif wsb_cfg.get("enabled"):
+        st.info("Watchlist source: **WSB Scanner** (Reddit trending)")
+    else:
+        watchlist = cfg.get("trading", {}).get("watchlist", [])
+        st.info(f"Watchlist source: **Static list** ({len(watchlist)} symbols)")
+
     st.subheader("Latest Scan Results")
     current = _get("/signals/current") or []
     if current:
