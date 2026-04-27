@@ -1,0 +1,65 @@
+trading:
+  mode: paper  # paper | live — also requires ALLOW_LIVE_TRADING=true env var
+  scan_interval_seconds: 60
+  min_score_to_trade: 3  # require 3+ indicator signals for auto trade (max ~8)
+  # Starter watchlist — replaced by WSB scanner once Reddit credentials are configured
+  watchlist:
+    - AAPL
+    - TSLA
+    - NVDA
+    - AMD
+    - META
+    - GOOGL
+    - AMZN
+    - MSFT
+    - GME
+    - AMC
+    - RIVN
+    - PLTR
+    - SOFI
+    - HOOD
+    - COIN
+    - MARA
+    - RIOT
+    - SOUN
+    - BBAI
+    - FFIE
+    - SPY
+    - QQQ
+    - SMCI
+    - IONQ
+    - RKLB
+
+risk:
+  max_position_pct: 0.02           # 2% of equity per auto trade
+  max_total_positions: 10          # never hold more than this many symbols
+  daily_loss_limit_pct: 0.03       # halt engine if equity drops 3% from day open
+  max_sector_pct: 0.20             # unused in v1 — reserved for future sector tracking
+  stop_loss_pct: 0.05              # 5% hard stop below entry
+  take_profit_pct: 0.10            # 10% take-profit limit
+  trailing_stop_pct: 0.03          # 3% trailing stop (activates after trigger)
+  trailing_stop_trigger_pct: 0.05  # trailing stop activates after 5% unrealized gain
+  min_price: 1.00                  # skip penny stocks
+  max_price: 1000.00
+  min_avg_volume: 500000           # minimum 20-day average daily volume
+
+pdt:
+  account_type: margin_under_25k   # cash | margin_under_25k | margin_over_25k
+  max_day_trades: 3                # blocked at 3 for margin_under_25k (PDT rule)
+
+market_hours:
+  allow_premarket: false
+  allow_afterhours: false
+  timezone: "America/Los_Angeles"
+
+strategy:
+  name: wsb_momentum
+  lookback_bars: 100    # bars of OHLCV history to fetch per symbol
+  bar_timeframe: "1Day" # 1Min | 5Min | 15Min | 1Hour | 1Day
+
+wsb_scanner:
+  enabled: false          # set to true once Reddit credentials are in .env
+  max_tickers: 25         # top N trending WSB tickers to use as watchlist
+  min_mentions: 3         # ignore tickers mentioned fewer than this many times
+  subreddits:
+    - wallstreetbets

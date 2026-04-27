@@ -1,0 +1,72 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: trading_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: trading
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trader -d trading"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - trading_net
+
+  engine:
+    build:
+      context: ./engine
+      dockerfile: Dockerfile
+    container_name: trading_engine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://trader:${DB_PASSWORD}@db:5432/trading
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./state:/app/state
+      - ./logs:/app/logs
+      - ./config.yaml:/app/config.yaml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    networks:
+      - trading_net
+
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: trading_ui
+    restart: unless-stopped
+    environment:
+      ENGINE_URL: http://engine:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      engine:
+        condition: service_healthy
+    networks:
+      - trading_net
+
+volumes:
+  postgres_data:
+
+networks:
+  trading_net:
+    driver: bridge
