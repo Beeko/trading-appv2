@@ -1,5 +1,6 @@
 trading:
   mode: paper  # paper | live — also requires ALLOW_LIVE_TRADING=true env var
+  style: moderate  # conservative | moderate | aggressive
   scan_interval_seconds: 60
   min_score_to_trade: 3  # require 3+ indicator signals for auto trade (max ~8)
   # Starter watchlist — replaced by WSB scanner once Reddit credentials are configured

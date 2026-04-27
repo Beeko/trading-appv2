@@ -9,6 +9,34 @@ from typing import Optional
 from loguru import logger
 
 
+STYLE_PRESETS: dict[str, dict] = {
+    "conservative": {
+        "max_position_pct": 0.01,
+        "stop_loss_pct": 0.03,
+        "take_profit_pct": 0.06,
+        "daily_loss_limit_pct": 0.015,
+        "max_total_positions": 5,
+        "min_score_to_trade": 5,
+    },
+    "moderate": {
+        "max_position_pct": 0.02,
+        "stop_loss_pct": 0.05,
+        "take_profit_pct": 0.10,
+        "daily_loss_limit_pct": 0.03,
+        "max_total_positions": 10,
+        "min_score_to_trade": 3,
+    },
+    "aggressive": {
+        "max_position_pct": 0.04,
+        "stop_loss_pct": 0.07,
+        "take_profit_pct": 0.20,
+        "daily_loss_limit_pct": 0.05,
+        "max_total_positions": 15,
+        "min_score_to_trade": 2,
+    },
+}
+
+
 @dataclass
 class OrderParams:
     qty: int
@@ -55,6 +83,19 @@ class RiskManager:
     def trading_mode(self) -> str:
         return "live" if self.live_trading_allowed() else "paper"
 
+    # ── trading style ─────────────────────────────────────────────────────────
+
+    def trading_style(self) -> str:
+        return self.config.trading.get("style", "moderate")
+
+    def effective_risk(self) -> dict:
+        """Config risk values with style preset applied on top."""
+        preset = STYLE_PRESETS.get(self.trading_style(), STYLE_PRESETS["moderate"])
+        return {**self.config.risk, **preset}
+
+    def min_score_for_style(self) -> int:
+        return int(self.effective_risk()["min_score_to_trade"])
+
     # ── daily loss limit ──────────────────────────────────────────────────────
 
     async def initialize_daily_baseline(self, current_equity: float) -> None:
@@ -68,7 +109,7 @@ class RiskManager:
     def daily_loss_breached(self, current_equity: float) -> bool:
         if self._daily_start_equity is None or self._daily_start_equity <= 0:
             return False
-        limit_pct = float(self.config.risk.get("daily_loss_limit_pct", 0.03))
+        limit_pct = float(self.effective_risk()["daily_loss_limit_pct"])
         loss_pct = (self._daily_start_equity - current_equity) / self._daily_start_equity
         if loss_pct >= limit_pct:
             logger.warning(
@@ -116,10 +157,10 @@ class RiskManager:
             logger.warning("Cannot size order: zero equity")
             return None
 
-        max_pct = float(self.config.risk.get("max_position_pct", 0.02))
+        risk = self.effective_risk()
+        max_pct = float(risk["max_position_pct"])
         notional = equity * max_pct
 
-        # Don't exceed buying power
         bp = float(account.get("buying_power", 0))
         notional = min(notional, bp * 0.95)
         if notional < signal.price:
@@ -130,8 +171,8 @@ class RiskManager:
         if qty < 1:
             return None
 
-        sl_pct = float(self.config.risk.get("stop_loss_pct", 0.05))
-        tp_pct = float(self.config.risk.get("take_profit_pct", 0.10))
+        sl_pct = float(risk["stop_loss_pct"])
+        tp_pct = float(risk["take_profit_pct"])
         # Anchor SL/TP to the live price so bracket legs pass Alpaca's validation
         price_ref = reference_price if reference_price is not None else signal.price
         stop_loss = round(price_ref * (1 - sl_pct), 2)
@@ -156,8 +197,9 @@ class RiskManager:
         qty = int(notional / price)
         if qty < 1:
             return None
-        sl_pct = float(self.config.risk.get("stop_loss_pct", 0.05))
-        tp_pct = float(self.config.risk.get("take_profit_pct", 0.10))
+        risk = self.effective_risk()
+        sl_pct = float(risk["stop_loss_pct"])
+        tp_pct = float(risk["take_profit_pct"])
         return OrderParams(
             qty=qty,
             entry_price_estimate=price,

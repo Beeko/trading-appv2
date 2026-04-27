@@ -142,8 +142,8 @@ class TradingEngine:
 
         positions = await self.client.get_positions()
         held = {p["symbol"] for p in positions}
-        max_pos = int(self.config.risk.get("max_total_positions", 10))
-        min_score = int(self.config.trading.get("min_score_to_trade", 3))
+        max_pos = int(self.risk.effective_risk()["max_total_positions"])
+        min_score = self.risk.min_score_for_style()
 
         for sig in self._last_scan_signals:
             if self._stop_event.is_set() or self.risk.kill_switch_active():
@@ -309,7 +309,7 @@ class TradingEngine:
             )
             await self.repo.log_event(
                 "order_placed",
-                f"{sig.symbol} buy {params.qty}@~${sig.price:.2f} score={sig.score}",
+                f"{sig.symbol} buy {params.qty}@~${sig.price:.2f} score={sig.score} style={self.risk.trading_style()}",
             )
             logger.info(
                 f"BUY {sig.symbol} x{params.qty} (score={sig.score}, "

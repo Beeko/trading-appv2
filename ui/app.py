@@ -75,6 +75,34 @@ with st.sidebar:
 
     st.divider()
 
+    # Trading style
+    _STYLE_OPTIONS = ["conservative", "moderate", "aggressive"]
+    _STYLE_INFO = {
+        "conservative": "1% pos · SL 3% · TP 6% · Score ≥5 · 5 max positions",
+        "moderate":     "2% pos · SL 5% · TP 10% · Score ≥3 · 10 max positions",
+        "aggressive":   "4% pos · SL 7% · TP 20% · Score ≥2 · 15 max positions",
+    }
+    current_style = status.get("trading_style", "moderate")
+    style_idx = _STYLE_OPTIONS.index(current_style) if current_style in _STYLE_OPTIONS else 1
+    st.subheader("Trading Style")
+    selected_style = st.radio(
+        "style",
+        _STYLE_OPTIONS,
+        index=style_idx,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="style_radio",
+    )
+    st.caption(_STYLE_INFO.get(selected_style, ""))
+    if selected_style != current_style:
+        res = _post("/config/style", {"style": selected_style})
+        if res.get("ok"):
+            st.rerun()
+        else:
+            st.error(res.get("error", "style update failed"))
+
+    st.divider()
+
     # Kill switch
     st.subheader("Kill Switch")
     if status.get("kill_switch"):

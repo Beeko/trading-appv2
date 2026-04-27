@@ -1,6 +1,7 @@
 """FastAPI routes. All shared resources (alpaca client, engine, repo, config)
 are accessed via request.app.state."""
 import math
+import re
 import time as _time
 from typing import Optional
 
@@ -104,6 +105,7 @@ async def engine_status(request: Request):
         "paused": eng.paused,
         "kill_switch": risk.kill_switch_active(),
         "trading_mode": risk.trading_mode(),
+        "trading_style": risk.trading_style(),
         "live_trading_allowed": risk.live_trading_allowed(),
         "daily_start_equity": risk.daily_start_equity,
     }
@@ -318,3 +320,38 @@ async def reload_config(request: Request):
     request.app.state.config.reload()
     await request.app.state.repo.log_event("config_reloaded", "via API")
     return {"ok": True, "config": request.app.state.config.raw()}
+
+
+_VALID_STYLES = {"conservative", "moderate", "aggressive"}
+
+
+class StyleUpdateRequest(BaseModel):
+    style: str
+
+
+@router.post("/config/style")
+async def update_style(req: StyleUpdateRequest, request: Request):
+    if req.style not in _VALID_STYLES:
+        raise HTTPException(400, f"style must be one of: {', '.join(sorted(_VALID_STYLES))}")
+    cfg = request.app.state.config
+    text = cfg._path.read_text()
+    updated = re.sub(
+        r'^(\s+style:\s*)\S+',
+        lambda m: m.group(1) + req.style,
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if updated == text:
+        # Field missing — insert after the mode line
+        updated = re.sub(
+            r'(^\s+mode:\s*\S+)',
+            lambda m: m.group(1) + f'\n  style: {req.style}',
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    cfg._path.write_text(updated)
+    cfg.reload()
+    await request.app.state.repo.log_event("style_changed", f"style={req.style}")
+    return {"ok": True, "style": req.style}
