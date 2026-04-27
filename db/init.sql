@@ -64,9 +64,32 @@ CREATE TABLE IF NOT EXISTS day_trades (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS option_trades (
+    id                  SERIAL PRIMARY KEY,
+    client_order_id     VARCHAR(64) UNIQUE NOT NULL,
+    broker_order_id     VARCHAR(64),
+    contract_symbol     VARCHAR(30) NOT NULL,
+    underlying_symbol   VARCHAR(20) NOT NULL,
+    contract_type       VARCHAR(10) NOT NULL,          -- call | put
+    expiration_date     DATE NOT NULL,
+    strike_price        NUMERIC(18, 4) NOT NULL,
+    side                VARCHAR(10) NOT NULL,           -- buy | sell
+    qty                 INTEGER NOT NULL,
+    filled_qty          INTEGER DEFAULT 0,
+    filled_avg_price    NUMERIC(18, 4),                -- per-contract premium
+    status              VARCHAR(20) NOT NULL DEFAULT 'pending',
+    trading_mode        VARCHAR(10) NOT NULL DEFAULT 'paper',
+    source              VARCHAR(20) DEFAULT 'manual',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    filled_at           TIMESTAMPTZ,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_trades_symbol         ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_created_at     ON trades(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_trades_status         ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_scanner_scanned_at    ON scanner_signals(scanned_at DESC);
 CREATE INDEX IF NOT EXISTS idx_engine_events_time    ON engine_events(occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_day_trades_date       ON day_trades(trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_option_trades_underlying ON option_trades(underlying_symbol);
+CREATE INDEX IF NOT EXISTS idx_option_trades_created_at ON option_trades(created_at DESC);

@@ -85,3 +85,26 @@ class DayTrade(Base):
     symbol = Column(String(20), nullable=False)
     trade_date = Column(Date, nullable=False, default=date.today)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
+
+
+class OptionTrade(Base):
+    __tablename__ = "option_trades"
+
+    id = Column(Integer, primary_key=True)
+    client_order_id = Column(String(64), unique=True, nullable=False)
+    broker_order_id = Column(String(64))
+    contract_symbol = Column(String(30), nullable=False)        # OCC symbol
+    underlying_symbol = Column(String(20), nullable=False, index=True)
+    contract_type = Column(String(10), nullable=False)          # call | put
+    expiration_date = Column(Date, nullable=False)
+    strike_price = Column(Numeric(18, 4), nullable=False)
+    side = Column(String(10), nullable=False)                   # buy | sell
+    qty = Column(Integer, nullable=False)
+    filled_qty = Column(Integer, default=0)
+    filled_avg_price = Column(Numeric(18, 4))                   # per-contract premium
+    status = Column(String(20), nullable=False, default="pending")
+    trading_mode = Column(String(10), nullable=False, default="paper")
+    source = Column(String(20), default="manual")
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    filled_at = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

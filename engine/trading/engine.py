@@ -425,6 +425,97 @@ class TradingEngine:
             )
             return {"ok": False, "error": str(e)}
 
+    # ── option order (manual, called by API route) ───────────────────────────
+
+    async def submit_option_order(
+        self,
+        *,
+        contract_symbol: str,
+        underlying_symbol: str,
+        contract_type: str,
+        expiration_date: str,
+        strike_price: float,
+        side: str,
+        qty: int,
+    ) -> dict:
+        if self.risk.kill_switch_active():
+            return {"ok": False, "error": "kill switch active"}
+
+        side = side.lower().strip()
+        if side not in ("buy", "sell"):
+            return {"ok": False, "error": f"invalid side: {side}"}
+
+        account = await self.client.get_account()
+        if account.get("trading_blocked"):
+            return {"ok": False, "error": "account trading blocked"}
+
+        await self.risk.initialize_daily_baseline(float(account["equity"]))
+        if self.risk.daily_loss_breached(float(account["equity"])):
+            return {"ok": False, "error": "daily loss limit breached"}
+
+        # For sells, verify the contract is held
+        if side == "sell":
+            positions = await self.client.get_positions()
+            held = {p["symbol"] for p in positions}
+            if contract_symbol not in held:
+                return {
+                    "ok": False,
+                    "error": f"no open position in {contract_symbol} to sell",
+                }
+
+        from datetime import date as _date
+        try:
+            exp_date = _date.fromisoformat(expiration_date)
+        except (ValueError, TypeError):
+            return {"ok": False, "error": f"invalid expiration_date: {expiration_date}"}
+
+        client_order_id = f"opt_{underlying_symbol}_{uuid.uuid4().hex[:10]}"
+
+        # Write pending row BEFORE submitting (crash-recovery invariant)
+        await self.repo.insert_option_trade_pending(
+            client_order_id=client_order_id,
+            contract_symbol=contract_symbol,
+            underlying_symbol=underlying_symbol,
+            contract_type=contract_type,
+            expiration_date=exp_date,
+            strike_price=strike_price,
+            side=side,
+            qty=qty,
+            trading_mode=self.risk.trading_mode(),
+        )
+
+        try:
+            result = await self.client.submit_option_order(
+                contract_symbol=contract_symbol,
+                qty=qty,
+                side=side,
+                client_order_id=client_order_id,
+            )
+            await self.repo.update_option_trade_after_submit(
+                client_order_id=client_order_id,
+                broker_order_id=result["id"],
+                status=result["status"],
+            )
+            await self.repo.log_event(
+                "option_order_placed",
+                f"{contract_symbol} {side} x{qty} (mode={self.risk.trading_mode()})",
+            )
+            logger.info(
+                f"OPTION {side.upper()} {contract_symbol} x{qty} "
+                f"(underlying={underlying_symbol} {contract_type} "
+                f"strike={strike_price} exp={expiration_date})"
+            )
+            return {"ok": True, "order": result, "client_order_id": client_order_id}
+        except Exception as e:
+            logger.error(f"Option order submission failed for {contract_symbol}: {e}")
+            await self.repo.update_option_trade_after_submit(
+                client_order_id=client_order_id,
+                broker_order_id=None,
+                status="error",
+            )
+            await self.repo.log_event("option_order_error", f"{contract_symbol}: {e}")
+            return {"ok": False, "error": str(e)}
+
     # ── snapshot for API ──────────────────────────────────────────────────────
 
     def snapshot_signals(self) -> list[dict]:

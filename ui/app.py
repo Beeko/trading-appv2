@@ -141,7 +141,7 @@ with st.sidebar:
 
 st.title("📊 Trading Dashboard")
 
-tabs = st.tabs(["Portfolio", "Live Signals", "Charts", "Trade Log", "Events", "Config"])
+tabs = st.tabs(["Portfolio", "Live Signals", "Charts", "Trade Log", "Events", "Options", "Config"])
 
 # ── Portfolio tab ─────────────────────────────────────────────────────────────
 
@@ -433,9 +433,193 @@ with tabs[4]:
         st.info("No events logged yet")
 
 
-# ── Config tab ────────────────────────────────────────────────────────────────
+# ── Options tab ───────────────────────────────────────────────────────────────
 
 with tabs[5]:
+    if "option_chain" not in st.session_state:
+        st.session_state.option_chain = []
+    if "option_underlying" not in st.session_state:
+        st.session_state.option_underlying = ""
+
+    # ── Chain loader ──────────────────────────────────────────────────────────
+    st.subheader("Options Chain")
+    lc1, lc2 = st.columns([3, 2])
+    with lc1:
+        und_input = st.text_input(
+            "Underlying Symbol",
+            value=st.session_state.option_underlying,
+            key="opt_sym",
+            placeholder="AAPL",
+        )
+    with lc2:
+        days_input = st.selectbox(
+            "Expiry within", [7, 14, 21, 30, 45, 60, 90], index=4, key="opt_days"
+        )
+
+    if st.button("Load Chain", type="primary"):
+        sym = und_input.upper().strip()
+        if not sym:
+            st.warning("Enter a symbol first")
+        else:
+            with st.spinner(f"Fetching option chain for {sym}…"):
+                data = _get(f"/options/chain/{sym}", days_out=days_input)
+            if data and isinstance(data.get("contracts"), list):
+                st.session_state.option_chain = data["contracts"]
+                st.session_state.option_underlying = sym
+                if not data["contracts"]:
+                    st.warning(
+                        f"No contracts returned for {sym}. "
+                        "Options trading may not be enabled on your Alpaca account, "
+                        "or no contracts exist in this expiry window."
+                    )
+            else:
+                st.error(f"Failed to load chain for {sym}")
+
+    # ── Chain display ─────────────────────────────────────────────────────────
+    chain = st.session_state.option_chain
+    if chain:
+        st.caption(
+            f"{len(chain)} contracts loaded for "
+            f"**{st.session_state.option_underlying}**"
+        )
+
+        expirations = sorted({c["expiration_date"] for c in chain if c["expiration_date"]})
+        selected_exp = st.selectbox("Expiration date", expirations, key="opt_expiry")
+
+        exp_contracts = [c for c in chain if c["expiration_date"] == selected_exp]
+        calls = sorted(
+            [c for c in exp_contracts if c.get("contract_type") == "call"],
+            key=lambda x: x.get("strike_price") or 0,
+        )
+        puts = sorted(
+            [c for c in exp_contracts if c.get("contract_type") == "put"],
+            key=lambda x: x.get("strike_price") or 0,
+        )
+
+        def _chain_rows(contracts):
+            return [
+                {
+                    "Strike": f"${c['strike_price']:.2f}" if c.get("strike_price") else "—",
+                    "Last": f"${c['close_price']:.2f}" if c.get("close_price") else "—",
+                    "OI": f"{c['open_interest']:,}" if c.get("open_interest") else "—",
+                    "Symbol": c["symbol"],
+                }
+                for c in contracts
+            ]
+
+        ch1, ch2 = st.columns(2)
+        with ch1:
+            st.markdown("**Calls**")
+            if calls:
+                st.dataframe(
+                    pd.DataFrame(_chain_rows(calls)).drop(columns=["Symbol"]),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.caption("No call contracts")
+        with ch2:
+            st.markdown("**Puts**")
+            if puts:
+                st.dataframe(
+                    pd.DataFrame(_chain_rows(puts)).drop(columns=["Symbol"]),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.caption("No put contracts")
+
+        # ── Order form ────────────────────────────────────────────────────────
+        st.divider()
+        st.subheader("Place Option Order")
+
+        tradable = [c for c in exp_contracts if c.get("tradable", True)]
+        if not tradable:
+            st.warning("No tradable contracts for this expiration")
+        else:
+            def _contract_label(c):
+                last = f" · last ${c['close_price']:.2f}" if c.get("close_price") else ""
+                oi = f" · OI {c['open_interest']:,}" if c.get("open_interest") else ""
+                return (
+                    f"{c.get('contract_type','?').upper()} "
+                    f"${c.get('strike_price', 0):.2f}"
+                    f"{last}{oi}"
+                )
+
+            contract_map = {_contract_label(c): c for c in tradable}
+
+            with st.form("options_order", clear_on_submit=False):
+                selected_label = st.selectbox(
+                    "Contract", list(contract_map.keys()), key="opt_contract_sel"
+                )
+                fc1, fc2 = st.columns(2)
+                with fc1:
+                    qty = st.number_input(
+                        "Qty (contracts)", min_value=1, max_value=50, value=1, step=1
+                    )
+                with fc2:
+                    side = st.selectbox("Side", ["buy", "sell"], key="opt_side")
+
+                # Cost preview — prominent so the ×100 multiplier is unmissable
+                selected_c = contract_map[selected_label]
+                if selected_c.get("close_price"):
+                    premium = selected_c["close_price"]
+                    total_cost = premium * 100 * qty
+                    if side == "buy":
+                        st.info(
+                            f"Estimated cost: ${premium:.2f} premium "
+                            f"× 100 multiplier × {int(qty)} contract(s) "
+                            f"= **${total_cost:,.2f}**"
+                        )
+                    else:
+                        st.info(
+                            f"Estimated proceeds: ${premium:.2f} premium "
+                            f"× 100 × {int(qty)} = **${total_cost:,.2f}**"
+                        )
+
+                submitted = st.form_submit_button(
+                    "Submit Option Order", type="primary", use_container_width=True
+                )
+                if submitted:
+                    c = selected_c
+                    payload = {
+                        "contract_symbol": c["symbol"],
+                        "underlying_symbol": c["underlying_symbol"],
+                        "contract_type": c.get("contract_type", ""),
+                        "expiration_date": c["expiration_date"],
+                        "strike_price": c.get("strike_price", 0),
+                        "side": side,
+                        "qty": int(qty),
+                    }
+                    res = _post("/options/order", json=payload)
+                    if res.get("ok"):
+                        st.success(
+                            f"Order submitted! "
+                            f"{c.get('contract_type','').upper()} "
+                            f"${c.get('strike_price'):.2f} "
+                            f"exp {c['expiration_date']} × {int(qty)}"
+                        )
+                    else:
+                        st.error(f"Failed: {res.get('error', 'unknown error')}")
+
+    # ── Recent option trades ──────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Recent Option Trades")
+    opt_trades = _get("/options/trades", limit=50) or []
+    if opt_trades:
+        df = pd.DataFrame(opt_trades)
+        cols = [
+            "created_at", "underlying_symbol", "contract_type", "strike_price",
+            "expiration_date", "side", "qty", "filled_avg_price", "status",
+            "contract_symbol", "trading_mode",
+        ]
+        cols = [c for c in cols if c in df.columns]
+        st.dataframe(df[cols], use_container_width=True, hide_index=True)
+    else:
+        st.info("No option trades yet")
+
+
+# ── Config tab ────────────────────────────────────────────────────────────────
+
+with tabs[6]:
     st.subheader("Active Configuration")
     cfg = _get("/config") or {}
     st.json(cfg)

@@ -258,6 +258,54 @@ async def screener_symbols(request: Request):
         raise HTTPException(500, str(e))
 
 
+# ── options ───────────────────────────────────────────────────────────────────
+
+@router.get("/options/chain/{symbol}")
+async def option_chain(
+    symbol: str,
+    request: Request,
+    days_out: int = 45,
+    type: str = "",
+):
+    contracts = await request.app.state.alpaca.get_option_chain(
+        underlying=symbol.upper(),
+        days_out=days_out,
+        contract_type=type.lower() if type.lower() in ("call", "put") else None,
+    )
+    return {"symbol": symbol.upper(), "count": len(contracts), "contracts": contracts}
+
+
+class OptionOrderRequest(BaseModel):
+    contract_symbol: str
+    underlying_symbol: str
+    contract_type: str   # "call" | "put"
+    expiration_date: str  # "YYYY-MM-DD"
+    strike_price: float
+    side: str            # "buy" | "sell"
+    qty: int
+
+
+@router.post("/options/order")
+async def submit_option_order(req: OptionOrderRequest, request: Request):
+    result = await request.app.state.engine.submit_option_order(
+        contract_symbol=req.contract_symbol,
+        underlying_symbol=req.underlying_symbol,
+        contract_type=req.contract_type,
+        expiration_date=req.expiration_date,
+        strike_price=req.strike_price,
+        side=req.side,
+        qty=req.qty,
+    )
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("error", "order failed"))
+    return result
+
+
+@router.get("/options/trades")
+async def list_option_trades(request: Request, limit: int = 50):
+    return await request.app.state.repo.list_recent_option_trades(limit=limit)
+
+
 # ── config ───────────────────────────────────────────────────────────────────
 
 @router.get("/config")

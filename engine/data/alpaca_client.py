@@ -259,6 +259,95 @@ class AlpacaClient:
     async def close_all_positions(self) -> None:
         await asyncio.to_thread(self.trading.close_all_positions, cancel_orders=True)
 
+    # ── options ───────────────────────────────────────────────────────────────
+
+    async def get_option_chain(
+        self,
+        underlying: str,
+        days_out: int = 45,
+        contract_type: Optional[str] = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Fetch active option contracts for an underlying symbol.
+
+        contract_type: 'call', 'put', or None for both.
+        """
+        try:
+            from alpaca.trading.requests import GetOptionContractsRequest
+            from alpaca.trading.enums import ContractType
+        except ImportError:
+            logger.warning("Options not supported in this alpaca-py version")
+            return []
+
+        today = datetime.now(timezone.utc).date()
+        expiry_end = today + timedelta(days=days_out)
+
+        ct = None
+        if contract_type == "call":
+            ct = ContractType.CALL
+        elif contract_type == "put":
+            ct = ContractType.PUT
+
+        params: dict = dict(
+            underlying_symbols=[underlying.upper()],
+            expiration_date_gte=today,
+            expiration_date_lte=expiry_end,
+            limit=limit,
+            status="active",
+        )
+        if ct is not None:
+            params["type"] = ct
+
+        req = GetOptionContractsRequest(**params)
+        try:
+            resp = await asyncio.to_thread(self.trading.get_option_contracts, req)
+            contracts = list(resp)
+            result = []
+            for c in contracts:
+                ctype = None
+                if hasattr(c, "type") and c.type is not None:
+                    ctype = c.type.value if hasattr(c.type, "value") else str(c.type)
+                result.append({
+                    "symbol": str(c.symbol),
+                    "underlying_symbol": str(c.underlying_symbol),
+                    "contract_type": ctype,
+                    "expiration_date": str(c.expiration_date) if c.expiration_date else None,
+                    "strike_price": float(c.strike_price) if c.strike_price is not None else None,
+                    "close_price": float(c.close_price) if c.close_price is not None else None,
+                    "open_interest": int(c.open_interest) if c.open_interest else None,
+                    "tradable": bool(c.tradable) if hasattr(c, "tradable") else True,
+                })
+            return result
+        except Exception as e:
+            logger.warning(f"get_option_chain({underlying}) failed: {e}")
+            return []
+
+    async def submit_option_order(
+        self,
+        *,
+        contract_symbol: str,
+        qty: int,
+        side: str,
+        client_order_id: str,
+    ) -> dict:
+        """Submit a market order for an option contract (single-leg)."""
+        order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+        req = MarketOrderRequest(
+            symbol=contract_symbol,
+            qty=qty,
+            side=order_side,
+            time_in_force=TimeInForce.DAY,
+            client_order_id=client_order_id,
+        )
+        order = await asyncio.to_thread(self.trading.submit_order, req)
+        return {
+            "id": str(order.id),
+            "client_order_id": str(order.client_order_id),
+            "symbol": order.symbol,
+            "status": order.status.value if hasattr(order.status, "value") else str(order.status),
+            "qty": int(float(order.qty)) if order.qty else qty,
+        }
+
     # ── screener ──────────────────────────────────────────────────────────────
 
     async def get_most_actives(self, top: int = 50) -> list[str]:

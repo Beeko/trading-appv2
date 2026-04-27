@@ -7,7 +7,7 @@ from loguru import logger
 from sqlalchemy import desc, func, select
 
 from database.models import (
-    DailyPnL, DayTrade, EngineEvent, ScannerSignal, Trade,
+    DailyPnL, DayTrade, EngineEvent, OptionTrade, ScannerSignal, Trade,
 )
 from database.session import get_session_factory
 
@@ -229,6 +229,91 @@ class Repository:
                 select(func.count(DayTrade.id)).where(DayTrade.trade_date >= cutoff)
             )
             return int(res.scalar() or 0)
+
+
+    # ── option trades ─────────────────────────────────────────────────────────
+
+    async def insert_option_trade_pending(
+        self,
+        *,
+        client_order_id: str,
+        contract_symbol: str,
+        underlying_symbol: str,
+        contract_type: str,
+        expiration_date,
+        strike_price: float,
+        side: str,
+        qty: int,
+        trading_mode: str = "paper",
+    ) -> int:
+        async with get_session_factory()() as s:
+            row = OptionTrade(
+                client_order_id=client_order_id,
+                contract_symbol=contract_symbol,
+                underlying_symbol=underlying_symbol,
+                contract_type=contract_type,
+                expiration_date=expiration_date,
+                strike_price=Decimal(str(strike_price)),
+                side=side,
+                qty=qty,
+                status="pending",
+                trading_mode=trading_mode,
+                source="manual",
+            )
+            s.add(row)
+            await s.commit()
+            await s.refresh(row)
+            return row.id
+
+    async def update_option_trade_after_submit(
+        self,
+        *,
+        client_order_id: str,
+        broker_order_id: Optional[str],
+        status: str,
+    ) -> None:
+        async with get_session_factory()() as s:
+            res = await s.execute(
+                select(OptionTrade).where(
+                    OptionTrade.client_order_id == client_order_id
+                )
+            )
+            row = res.scalar_one_or_none()
+            if row is None:
+                logger.warning(f"OptionTrade not found: {client_order_id}")
+                return
+            row.broker_order_id = broker_order_id
+            row.status = status
+            await s.commit()
+
+    async def list_recent_option_trades(self, limit: int = 50) -> list[dict]:
+        async with get_session_factory()() as s:
+            res = await s.execute(
+                select(OptionTrade)
+                .order_by(desc(OptionTrade.created_at))
+                .limit(limit)
+            )
+            return [_option_trade_to_dict(r) for r in res.scalars().all()]
+
+
+def _option_trade_to_dict(r: OptionTrade) -> dict:
+    return {
+        "id": r.id,
+        "client_order_id": r.client_order_id,
+        "broker_order_id": r.broker_order_id,
+        "contract_symbol": r.contract_symbol,
+        "underlying_symbol": r.underlying_symbol,
+        "contract_type": r.contract_type,
+        "expiration_date": str(r.expiration_date) if r.expiration_date else None,
+        "strike_price": float(r.strike_price) if r.strike_price else None,
+        "side": r.side,
+        "qty": r.qty,
+        "filled_qty": r.filled_qty,
+        "filled_avg_price": float(r.filled_avg_price) if r.filled_avg_price else None,
+        "status": r.status,
+        "trading_mode": r.trading_mode,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }
 
 
 def _trade_to_dict(t: Trade) -> dict:
