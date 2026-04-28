@@ -295,6 +295,85 @@ class Repository:
             )
             return [_option_trade_to_dict(r) for r in res.scalars().all()]
 
+    async def update_option_trade_with_entry_data(
+        self,
+        *,
+        client_order_id: str,
+        entry_delta: Optional[float],
+        entry_gamma: Optional[float],
+        entry_theta: Optional[float],
+        entry_vega: Optional[float],
+        entry_iv: Optional[float],
+        entry_bid: Optional[float],
+        entry_ask: Optional[float],
+        entry_mid: Optional[float],
+        premium_paid: Optional[float],
+        dte_at_entry: Optional[int],
+        underlying_score: Optional[int],
+        underlying_signals: Optional[list[str]],
+    ) -> None:
+        async with get_session_factory()() as s:
+            res = await s.execute(
+                select(OptionTrade).where(
+                    OptionTrade.client_order_id == client_order_id
+                )
+            )
+            row = res.scalar_one_or_none()
+            if row is None:
+                logger.warning(f"OptionTrade not found for entry data: {client_order_id}")
+                return
+            row.entry_delta = Decimal(str(entry_delta)) if entry_delta is not None else None
+            row.entry_gamma = Decimal(str(entry_gamma)) if entry_gamma is not None else None
+            row.entry_theta = Decimal(str(entry_theta)) if entry_theta is not None else None
+            row.entry_vega = Decimal(str(entry_vega)) if entry_vega is not None else None
+            row.entry_iv = Decimal(str(entry_iv)) if entry_iv is not None else None
+            row.entry_bid = Decimal(str(entry_bid)) if entry_bid is not None else None
+            row.entry_ask = Decimal(str(entry_ask)) if entry_ask is not None else None
+            row.entry_mid = Decimal(str(entry_mid)) if entry_mid is not None else None
+            row.premium_paid = Decimal(str(premium_paid)) if premium_paid is not None else None
+            row.dte_at_entry = dte_at_entry
+            row.underlying_score = underlying_score
+            row.underlying_signals = underlying_signals or []
+            await s.commit()
+
+    async def update_option_trade_exit(
+        self,
+        *,
+        client_order_id: str,
+        exit_mid: float,
+        exit_dte: int,
+        exit_reason: str,
+        status: str = "closing",
+    ) -> None:
+        async with get_session_factory()() as s:
+            res = await s.execute(
+                select(OptionTrade).where(
+                    OptionTrade.client_order_id == client_order_id
+                )
+            )
+            row = res.scalar_one_or_none()
+            if row is None:
+                logger.warning(f"OptionTrade not found for exit: {client_order_id}")
+                return
+            row.exit_mid = Decimal(str(exit_mid))
+            row.exit_dte = exit_dte
+            row.exit_reason = exit_reason
+            row.status = status
+            await s.commit()
+
+    async def list_open_option_trades(self) -> list[dict]:
+        """Open buy positions awaiting exit (status in {'filled', 'partially_filled'})."""
+        async with get_session_factory()() as s:
+            res = await s.execute(
+                select(OptionTrade)
+                .where(
+                    OptionTrade.side == "buy",
+                    OptionTrade.status.in_(["filled", "partially_filled"]),
+                )
+                .order_by(desc(OptionTrade.created_at))
+            )
+            return [_option_trade_to_dict(r) for r in res.scalars().all()]
+
 
 def _option_trade_to_dict(r: OptionTrade) -> dict:
     return {
@@ -313,6 +392,21 @@ def _option_trade_to_dict(r: OptionTrade) -> dict:
         "status": r.status,
         "trading_mode": r.trading_mode,
         "created_at": r.created_at.isoformat() if r.created_at else None,
+        "entry_delta": float(r.entry_delta) if r.entry_delta is not None else None,
+        "entry_gamma": float(r.entry_gamma) if r.entry_gamma is not None else None,
+        "entry_theta": float(r.entry_theta) if r.entry_theta is not None else None,
+        "entry_vega": float(r.entry_vega) if r.entry_vega is not None else None,
+        "entry_iv": float(r.entry_iv) if r.entry_iv is not None else None,
+        "entry_bid": float(r.entry_bid) if r.entry_bid is not None else None,
+        "entry_ask": float(r.entry_ask) if r.entry_ask is not None else None,
+        "entry_mid": float(r.entry_mid) if r.entry_mid is not None else None,
+        "premium_paid": float(r.premium_paid) if r.premium_paid is not None else None,
+        "dte_at_entry": r.dte_at_entry,
+        "exit_mid": float(r.exit_mid) if r.exit_mid is not None else None,
+        "exit_dte": r.exit_dte,
+        "exit_reason": r.exit_reason,
+        "underlying_score": r.underlying_score,
+        "underlying_signals": r.underlying_signals,
     }
 
 
