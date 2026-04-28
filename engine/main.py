@@ -14,6 +14,7 @@ from data.alpaca_client import AlpacaClient
 from database.repo import Repository
 from database.session import close_db, init_db
 from risk.manager import RiskManager
+from options.engine import OptionsEngine
 from trading.engine import TradingEngine
 
 
@@ -57,6 +58,11 @@ async def lifespan(app: FastAPI):
     app.state.repo = repo
     app.state.engine = engine
 
+    options_engine = OptionsEngine(
+        settings=settings, config=config, client=alpaca, risk=risk, repo=repo,
+    )
+    app.state.options_engine = options_engine
+
     # Test broker connectivity (fail fast on bad creds)
     try:
         acct = await alpaca.get_account()
@@ -81,6 +87,11 @@ async def lifespan(app: FastAPI):
     engine_task = asyncio.create_task(engine.run(), name="trading_engine")
     app.state.engine_task = engine_task
 
+    options_engine_task = asyncio.create_task(
+        options_engine.run(), name="options_engine",
+    )
+    app.state.options_engine_task = options_engine_task
+
     try:
         yield
     finally:
@@ -89,6 +100,12 @@ async def lifespan(app: FastAPI):
         engine_task.cancel()
         try:
             await engine_task
+        except asyncio.CancelledError:
+            pass
+        await options_engine.stop()
+        options_engine_task.cancel()
+        try:
+            await options_engine_task
         except asyncio.CancelledError:
             pass
         await close_db()
