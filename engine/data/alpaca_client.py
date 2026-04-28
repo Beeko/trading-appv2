@@ -12,14 +12,15 @@ import pandas as pd
 from loguru import logger
 
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, StockLatestTradeRequest
+from alpaca.data.historical.option import OptionHistoricalDataClient
+from alpaca.data.requests import OptionSnapshotRequest, StockBarsRequest, StockLatestTradeRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import (
     OrderClass, OrderSide, QueryOrderStatus, TimeInForce,
 )
 from alpaca.trading.requests import (
-    GetOrdersRequest, MarketOrderRequest, StopLossRequest, TakeProfitRequest,
+    GetOrdersRequest, LimitOrderRequest, MarketOrderRequest, StopLossRequest, TakeProfitRequest,
 )
 
 
@@ -39,6 +40,7 @@ class AlpacaClient:
         self._secret_key = secret_key
         self.trading = TradingClient(api_key, secret_key, paper=paper)
         self.data = StockHistoricalDataClient(api_key, secret_key)
+        self.option_data = OptionHistoricalDataClient(api_key, secret_key)
 
     # ── account / positions ───────────────────────────────────────────────────
 
@@ -355,6 +357,118 @@ class AlpacaClient:
             "status": order.status.value if hasattr(order.status, "value") else str(order.status),
             "qty": int(float(order.qty)) if order.qty else qty,
         }
+
+    # ── option snapshots (Greeks / IV / bid-ask) ──────────────────────────────
+
+    @staticmethod
+    def _normalize_snapshot(snap) -> dict:
+        """Convert an alpaca-py OptionSnapshot to a plain dict."""
+        greeks = getattr(snap, "greeks", None)
+        delta = getattr(greeks, "delta", None) if greeks else None
+        gamma = getattr(greeks, "gamma", None) if greeks else None
+        theta = getattr(greeks, "theta", None) if greeks else None
+        vega = getattr(greeks, "vega", None) if greeks else None
+
+        quote = getattr(snap, "latest_quote", None)
+        bid = float(getattr(quote, "bid_price", 0)) if quote else 0.0
+        ask = float(getattr(quote, "ask_price", 0)) if quote else 0.0
+        mid = (bid + ask) / 2 if bid > 0 and ask > 0 else (ask or bid or 0.0)
+        spread_pct = ((ask - bid) / mid) if (mid > 0 and bid > 0 and ask > 0) else None
+
+        trade = getattr(snap, "latest_trade", None)
+        last_price = float(getattr(trade, "price", 0)) if trade else None
+
+        daily = getattr(snap, "daily_bar", None)
+        volume = int(getattr(daily, "volume", 0)) if daily else 0
+
+        oi = getattr(snap, "open_interest", None)
+
+        return {
+            "delta": float(delta) if delta is not None else None,
+            "gamma": float(gamma) if gamma is not None else None,
+            "theta": float(theta) if theta is not None else None,
+            "vega": float(vega) if vega is not None else None,
+            "implied_volatility": float(snap.implied_volatility)
+                if getattr(snap, "implied_volatility", None) is not None else None,
+            "bid": bid,
+            "ask": ask,
+            "mid": mid,
+            "spread_pct": spread_pct,
+            "volume": volume,
+            "open_interest": int(oi) if oi is not None else None,
+            "last_price": last_price,
+        }
+
+    async def get_option_snapshot(self, contract_symbol: str) -> Optional[dict]:
+        """Single-contract snapshot. Returns None on error or missing data."""
+        try:
+            req = OptionSnapshotRequest(symbol_or_symbols=contract_symbol)
+            resp = await asyncio.to_thread(
+                self.option_data.get_option_snapshot, req
+            )
+            snap = resp.get(contract_symbol) if isinstance(resp, dict) else None
+            if snap is None:
+                return None
+            return self._normalize_snapshot(snap)
+        except Exception as e:
+            logger.warning(f"get_option_snapshot({contract_symbol}) failed: {e}")
+            return None
+
+    async def get_option_snapshots(
+        self, contract_symbols: list[str]
+    ) -> dict[str, dict]:
+        """Batched snapshots, keyed by contract_symbol. Drops contracts that error."""
+        if not contract_symbols:
+            return {}
+        out: dict[str, dict] = {}
+        for i in range(0, len(contract_symbols), 100):
+            batch = contract_symbols[i:i + 100]
+            try:
+                req = OptionSnapshotRequest(symbol_or_symbols=batch)
+                resp = await asyncio.to_thread(
+                    self.option_data.get_option_snapshot, req
+                )
+            except Exception as e:
+                logger.warning(f"get_option_snapshots batch failed: {e}")
+                continue
+            if not isinstance(resp, dict):
+                continue
+            for sym, snap in resp.items():
+                if snap is not None:
+                    out[sym] = self._normalize_snapshot(snap)
+        return out
+
+    async def submit_option_limit_order(
+        self,
+        *,
+        contract_symbol: str,
+        qty: int,
+        side: str,
+        limit_price: float,
+        client_order_id: str,
+    ) -> dict:
+        """Single-leg option limit order. Mid-price preferred for tight execution."""
+        order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+        req = LimitOrderRequest(
+            symbol=contract_symbol,
+            qty=qty,
+            side=order_side,
+            limit_price=round(limit_price, 2),
+            time_in_force=TimeInForce.DAY,
+            client_order_id=client_order_id,
+        )
+        order = await asyncio.to_thread(self.trading.submit_order, req)
+        return {
+            "id": str(order.id),
+            "client_order_id": str(order.client_order_id),
+            "symbol": order.symbol,
+            "status": order.status.value if hasattr(order.status, "value")
+                else str(order.status),
+            "qty": int(float(order.qty)) if order.qty else qty,
+        }
+
+    async def cancel_option_order(self, broker_order_id: str) -> None:
+        await asyncio.to_thread(self.trading.cancel_order_by_id, broker_order_id)
 
     # ── screener ──────────────────────────────────────────────────────────────
 
