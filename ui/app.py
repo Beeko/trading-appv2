@@ -101,6 +101,17 @@ with st.sidebar:
         else:
             st.error(res.get("error", "style update failed"))
 
+    # Daily goal compact progress
+    _sb_goal = float(status.get("daily_profit_goal", 0))
+    _sb_start = status.get("daily_start_equity")
+    if _sb_goal > 0 and _sb_start:
+        _sb_account = _get("/account") or {}
+        _sb_equity = float(_sb_account.get("equity", _sb_start))
+        _sb_gain = _sb_equity - float(_sb_start)
+        _sb_pct = max(0.0, min(_sb_gain / _sb_goal, 1.0))
+        st.caption(f"Daily goal: ${_sb_gain:+,.0f} / ${_sb_goal:,.0f}")
+        st.progress(_sb_pct)
+
     st.divider()
 
     # Kill switch
@@ -192,6 +203,42 @@ with tabs[0]:
             st.error("🚫 Trading is blocked on this account")
         if account.get("pattern_day_trader"):
             st.warning("⚠ Pattern Day Trader flag is set on the account")
+
+    # Daily profit goal progress
+    _port_status = _get("/engine/status") or {}
+    _goal = float(_port_status.get("daily_profit_goal", 0))
+    _start_eq = _port_status.get("daily_start_equity")
+    if _goal > 0 and _start_eq and account:
+        _equity = float(account.get("equity", 0))
+        _daily_gain = _equity - float(_start_eq)
+        _progress = max(0.0, min(_daily_gain / _goal, 1.0))
+        st.subheader("Daily Profit Goal")
+        gc1, gc2, gc3 = st.columns(3)
+        gc1.metric("Today's Gain", f"${_daily_gain:+,.2f}")
+        gc2.metric("Goal", f"${_goal:,.2f}")
+        gc3.metric("Remaining", f"${max(0.0, _goal - _daily_gain):,.2f}")
+        _bar_label = f"${_daily_gain:+,.2f} / ${_goal:,.2f}  ({_progress*100:.0f}%)"
+        st.progress(_progress, text=_bar_label)
+        if _daily_gain >= _goal:
+            st.success("Goal reached — engine will pause on next tick to lock in profit.")
+        elif _progress >= 0.6:
+            st.info(f"Over 60% there — engine is accepting slightly lower-scored signals to push toward goal.")
+
+    with st.expander("Set Daily Profit Goal"):
+        _goal_cfg = _get("/config") or {}
+        _cur_goal = float(_goal_cfg.get("risk", {}).get("daily_profit_goal", 0))
+        with st.form("goal_form"):
+            _new_goal = st.number_input(
+                "Daily target ($)", min_value=0.0, value=_cur_goal, step=50.0,
+            )
+            st.caption("Set to 0 to disable. Engine pauses once daily gain hits this amount.")
+            if st.form_submit_button("Update Goal", type="primary"):
+                _res = _post("/config/daily-goal", {"goal": float(_new_goal)})
+                if _res.get("ok"):
+                    st.success(f"Goal updated to ${_new_goal:,.2f}" if _new_goal > 0 else "Goal disabled")
+                    st.rerun()
+                else:
+                    st.error(_res.get("error", "update failed"))
 
     st.subheader("Open Positions")
     positions = _get("/positions") or []

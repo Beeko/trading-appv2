@@ -93,8 +93,31 @@ class RiskManager:
         preset = STYLE_PRESETS.get(self.trading_style(), STYLE_PRESETS["moderate"])
         return {**self.config.risk, **preset}
 
-    def min_score_for_style(self) -> int:
-        return int(self.effective_risk()["min_score_to_trade"])
+    def min_score_for_style(self, current_equity: Optional[float] = None) -> int:
+        base = int(self.effective_risk()["min_score_to_trade"])
+        if current_equity is not None:
+            progress = self.daily_profit_progress(current_equity)
+            # Once 60% of daily goal is achieved, nudge threshold down by 1 to
+            # allow more signals through — "push a little" without sizing up
+            if progress >= 0.6:
+                return max(1, base - 1)
+        return base
+
+    # ── daily profit goal ─────────────────────────────────────────────────────
+
+    def daily_profit_goal(self) -> float:
+        return float(self.config.risk.get("daily_profit_goal", 0.0))
+
+    def daily_profit_progress(self, current_equity: float) -> float:
+        """Returns 0.0–1.0+ progress toward daily goal; 0.0 when goal is disabled."""
+        goal = self.daily_profit_goal()
+        if goal <= 0 or self._daily_start_equity is None:
+            return 0.0
+        daily_gain = current_equity - self._daily_start_equity
+        return max(0.0, daily_gain / goal)
+
+    def daily_profit_goal_reached(self, current_equity: float) -> bool:
+        return self.daily_profit_goal() > 0 and self.daily_profit_progress(current_equity) >= 1.0
 
     # ── daily loss limit ──────────────────────────────────────────────────────
 

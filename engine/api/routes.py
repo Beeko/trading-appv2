@@ -108,6 +108,7 @@ async def engine_status(request: Request):
         "trading_style": risk.trading_style(),
         "live_trading_allowed": risk.live_trading_allowed(),
         "daily_start_equity": risk.daily_start_equity,
+        "daily_profit_goal": risk.daily_profit_goal(),
     }
 
 
@@ -320,6 +321,41 @@ async def reload_config(request: Request):
     request.app.state.config.reload()
     await request.app.state.repo.log_event("config_reloaded", "via API")
     return {"ok": True, "config": request.app.state.config.raw()}
+
+
+class DailyGoalRequest(BaseModel):
+    goal: float  # dollar amount; 0 = disabled
+
+
+@router.post("/config/daily-goal")
+async def update_daily_goal(req: DailyGoalRequest, request: Request):
+    if req.goal < 0:
+        raise HTTPException(400, "goal must be >= 0")
+    cfg = request.app.state.config
+    text = cfg._path.read_text()
+    updated = re.sub(
+        r'^(\s+daily_profit_goal:\s*)\S+',
+        lambda m: m.group(1) + str(round(req.goal, 2)),
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if updated == text:
+        # Field missing — insert after daily_loss_limit_pct line
+        updated = re.sub(
+            r'(^\s+daily_loss_limit_pct:\s*\S+)',
+            lambda m: m.group(1) + f'\n  daily_profit_goal: {round(req.goal, 2)}',
+            text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+    cfg._path.write_text(updated)
+    cfg.reload()
+    await request.app.state.repo.log_event(
+        "daily_goal_updated",
+        f"goal=${req.goal:.2f}" if req.goal > 0 else "goal=disabled",
+    )
+    return {"ok": True, "daily_profit_goal": req.goal}
 
 
 _VALID_STYLES = {"conservative", "moderate", "aggressive"}

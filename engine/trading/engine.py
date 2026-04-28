@@ -125,6 +125,17 @@ class TradingEngine:
             self._paused = True
             return
 
+        if self.risk.daily_profit_goal_reached(float(account["equity"])):
+            goal = self.risk.daily_profit_goal()
+            gain = float(account["equity"]) - self.risk.daily_start_equity
+            await self.repo.log_event(
+                "daily_goal_reached",
+                f"gain=${gain:.2f} >= goal=${goal:.2f} — pausing to lock in profit",
+            )
+            logger.info(f"Daily profit goal ${goal:.2f} reached (gain=${gain:.2f}) — engine paused")
+            self._paused = True
+            return
+
         if account.get("trading_blocked") or account.get("account_blocked"):
             logger.error(f"Account blocked: {account}")
             await self.repo.log_event("account_blocked", str(account))
@@ -143,7 +154,7 @@ class TradingEngine:
         positions = await self.client.get_positions()
         held = {p["symbol"] for p in positions}
         max_pos = int(self.risk.effective_risk()["max_total_positions"])
-        min_score = self.risk.min_score_for_style()
+        min_score = self.risk.min_score_for_style(float(account["equity"]))
 
         for sig in self._last_scan_signals:
             if self._stop_event.is_set() or self.risk.kill_switch_active():

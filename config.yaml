@@ -35,6 +35,7 @@ risk:
   max_position_pct: 0.02           # 2% of equity per auto trade
   max_total_positions: 10          # never hold more than this many symbols
   daily_loss_limit_pct: 0.03       # halt engine if equity drops 3% from day open
+  daily_profit_goal: 0.0           # 0 = disabled; engine pauses when daily gain reaches this $
   max_sector_pct: 0.20             # unused in v1 — reserved for future sector tracking
   stop_loss_pct: 0.05              # 5% hard stop below entry
   take_profit_pct: 0.10            # 10% take-profit limit
