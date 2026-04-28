@@ -508,188 +508,239 @@ with tabs[4]:
         st.info("No events logged yet")
 
 
+# ── Options helpers ───────────────────────────────────────────────────────────
+
+def _render_options_engine_panel():
+    status = _get("/options/engine/status") or {}
+    cols = st.columns([1, 2, 1, 1])
+    with cols[0]:
+        if status.get("paused"):
+            st.warning("Options: ⏸ paused")
+        elif status.get("running"):
+            st.success("Options: ✅ running")
+        else:
+            st.error("Options: ⚠ stopped")
+    with cols[1]:
+        last_scan = status.get("last_scan_at") or "—"
+        st.caption(f"last scan: {last_scan}")
+    with cols[2]:
+        if st.button("Pause options", key="opt_pause", disabled=status.get("paused", False)):
+            _post("/options/engine/pause")
+            st.rerun()
+    with cols[3]:
+        if st.button("Resume options", key="opt_resume", disabled=not status.get("paused", False)):
+            _post("/options/engine/resume")
+            st.rerun()
+
+
+def _render_open_options_positions():
+    data = _get("/options/positions")
+    if not data or data.get("count", 0) == 0:
+        st.info("No open option positions.")
+        return
+
+    rows = []
+    for p in data["positions"]:
+        rows.append({
+            "Contract": p["contract_symbol"],
+            "Side": p["side"],
+            "Qty": p["qty"],
+            "Entry mid": p.get("entry_mid"),
+            "Current mid": p.get("current_mid"),
+            "P&L %": (p["pnl_pct"] * 100) if p.get("pnl_pct") is not None else None,
+            "Entry Δ": p.get("entry_delta"),
+            "Current Δ": p.get("current_delta"),
+            "IV": p.get("current_iv"),
+            "DTE": p.get("dte_remaining"),
+            "Next trigger": p.get("next_trigger") or "—",
+        })
+    df = pd.DataFrame(rows)
+
+    def _color_pnl(v):
+        if pd.isna(v):
+            return ""
+        return "color: green" if v > 0 else "color: red" if v < 0 else ""
+
+    def _color_trigger(v):
+        return "color: orange; font-weight: bold" if v and v != "—" else ""
+
+    styled = (
+        df.style
+        .map(_color_pnl, subset=["P&L %"])
+        .map(_color_trigger, subset=["Next trigger"])
+        .format({
+            "Entry mid": "${:.2f}", "Current mid": "${:.2f}", "P&L %": "{:+.1f}%",
+            "Entry Δ": "{:.2f}", "Current Δ": "{:.2f}", "IV": "{:.1%}",
+        }, na_rep="—")
+    )
+    st.dataframe(styled, use_container_width=True)
+
+
+def _render_options_chain_explorer():
+    symbol = st.text_input("Symbol", value="AAPL", key="opt_chain_sym").upper()
+    days_out = st.slider("Days out", 7, 90, 45, key="opt_chain_days")
+    cfilter = st.selectbox("Type", ["any", "call", "put"], key="opt_chain_type")
+    hide_illiquid = st.checkbox(
+        "Hide illiquid (engine filter)", value=True, key="opt_chain_liq",
+    )
+
+    if not symbol:
+        return
+
+    type_param = "" if cfilter == "any" else cfilter
+    data = _get(f"/options/chain/{symbol}", days_out=days_out, type=type_param)
+    if not data or not data.get("contracts"):
+        st.info("No contracts returned.")
+        return
+
+    cfg = _get("/config") or {}
+    liq = ((cfg.get("options") or {}).get("liquidity") or {})
+    max_spread = float(liq.get("max_spread_pct", 0.20))
+    min_vol = int(liq.get("min_volume", 10))
+    min_oi = int(liq.get("min_open_interest", 100))
+
+    rows = []
+    for c in data["contracts"]:
+        spread = c.get("spread_pct")
+        vol = c.get("volume") or 0
+        oi = c.get("open_interest") or 0
+        is_liquid = (
+            spread is not None and spread <= max_spread
+            and vol >= min_vol and oi >= min_oi
+        )
+        if hide_illiquid and not is_liquid:
+            continue
+        rows.append({
+            "Symbol": c["symbol"],
+            "Type": c["contract_type"],
+            "Expiry": c["expiration_date"],
+            "Strike": c["strike_price"],
+            "Bid": c.get("bid"), "Ask": c.get("ask"), "Mid": c.get("mid"),
+            "Spread%": (spread * 100) if spread is not None else None,
+            "Δ": c.get("delta"), "Γ": c.get("gamma"),
+            "Θ": c.get("theta"), "Vega": c.get("vega"),
+            "IV": c.get("iv"),
+            "Vol": vol, "OI": oi,
+        })
+
+    if not rows:
+        st.info("No liquid contracts match. Toggle off 'Hide illiquid' to see all.")
+        return
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df.style.format({
+            "Strike": "${:.2f}", "Bid": "${:.2f}", "Ask": "${:.2f}", "Mid": "${:.2f}",
+            "Spread%": "{:.1f}%", "Δ": "{:.2f}", "Γ": "{:.3f}",
+            "Θ": "{:.3f}", "Vega": "{:.3f}", "IV": "{:.1%}",
+        }, na_rep="—"),
+        use_container_width=True,
+    )
+
+    # ── Order form ────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Place Option Order")
+    if not rows:
+        return
+    contract_options = [r["Symbol"] for r in rows]
+    contract_map_full = {c["symbol"]: c for c in data["contracts"]}
+
+    with st.form("options_order_new", clear_on_submit=False):
+        selected_sym = st.selectbox("Contract", contract_options, key="opt_contract_sel2")
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            qty = st.number_input("Qty (contracts)", min_value=1, max_value=50, value=1, step=1)
+        with fc2:
+            side = st.selectbox("Side", ["buy", "sell"], key="opt_side2")
+
+        selected_c = contract_map_full.get(selected_sym, {})
+        mid_price = selected_c.get("mid") or selected_c.get("close_price")
+        if mid_price:
+            total_cost = mid_price * 100 * qty
+            label = "Estimated cost" if side == "buy" else "Estimated proceeds"
+            st.info(f"{label}: ${mid_price:.2f} × 100 × {int(qty)} = **${total_cost:,.2f}**")
+
+        submitted = st.form_submit_button("Submit Option Order", type="primary", use_container_width=True)
+        if submitted and selected_c:
+            payload = {
+                "contract_symbol": selected_c["symbol"],
+                "underlying_symbol": selected_c.get("underlying_symbol", symbol),
+                "contract_type": selected_c.get("contract_type", ""),
+                "expiration_date": selected_c["expiration_date"],
+                "strike_price": selected_c.get("strike_price", 0),
+                "side": side,
+                "qty": int(qty),
+            }
+            res = _post("/options/order", json=payload)
+            if res and res.get("ok"):
+                st.success(f"Order submitted! {selected_sym} × {int(qty)}")
+            else:
+                st.error(f"Failed: {(res or {}).get('error', 'unknown error')}")
+
+
+def _render_iv_surface():
+    symbol = st.text_input("Symbol", value="AAPL", key="opt_iv_sym").upper()
+    if not symbol:
+        return
+
+    data = _get(f"/options/iv-surface/{symbol}")
+    if not data or not data.get("expirations"):
+        st.info("No IV data available.")
+        return
+
+    fig = go.Figure()
+    for exp in data["expirations"]:
+        points = exp["points"]
+        if not points:
+            continue
+        fig.add_trace(go.Scatter(
+            x=[p["strike"] for p in points],
+            y=[p["iv"] * 100 for p in points],
+            mode="lines+markers",
+            name=exp["expiration_date"],
+        ))
+    fig.update_layout(
+        title=f"{symbol} IV by Strike",
+        xaxis_title="Strike",
+        yaxis_title="Implied Volatility (%)",
+        height=480,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
 # ── Options tab ───────────────────────────────────────────────────────────────
 
 with tabs[5]:
-    if "option_chain" not in st.session_state:
-        st.session_state.option_chain = []
-    if "option_underlying" not in st.session_state:
-        st.session_state.option_underlying = ""
-
-    # ── Chain loader ──────────────────────────────────────────────────────────
-    st.subheader("Options Chain")
-    lc1, lc2 = st.columns([3, 2])
-    with lc1:
-        und_input = st.text_input(
-            "Underlying Symbol",
-            value=st.session_state.option_underlying,
-            key="opt_sym",
-            placeholder="AAPL",
-        )
-    with lc2:
-        days_input = st.selectbox(
-            "Expiry within", [7, 14, 21, 30, 45, 60, 90], index=4, key="opt_days"
-        )
-
-    if st.button("Load Chain", type="primary"):
-        sym = und_input.upper().strip()
-        if not sym:
-            st.warning("Enter a symbol first")
-        else:
-            with st.spinner(f"Fetching option chain for {sym}…"):
-                data = _get(f"/options/chain/{sym}", days_out=days_input)
-            if data and isinstance(data.get("contracts"), list):
-                st.session_state.option_chain = data["contracts"]
-                st.session_state.option_underlying = sym
-                if not data["contracts"]:
-                    st.warning(
-                        f"No contracts returned for {sym}. "
-                        "Options trading may not be enabled on your Alpaca account, "
-                        "or no contracts exist in this expiry window."
-                    )
-            else:
-                st.error(f"Failed to load chain for {sym}")
-
-    # ── Chain display ─────────────────────────────────────────────────────────
-    chain = st.session_state.option_chain
-    if chain:
-        st.caption(
-            f"{len(chain)} contracts loaded for "
-            f"**{st.session_state.option_underlying}**"
-        )
-
-        expirations = sorted({c["expiration_date"] for c in chain if c["expiration_date"]})
-        selected_exp = st.selectbox("Expiration date", expirations, key="opt_expiry")
-
-        exp_contracts = [c for c in chain if c["expiration_date"] == selected_exp]
-        calls = sorted(
-            [c for c in exp_contracts if c.get("contract_type") == "call"],
-            key=lambda x: x.get("strike_price") or 0,
-        )
-        puts = sorted(
-            [c for c in exp_contracts if c.get("contract_type") == "put"],
-            key=lambda x: x.get("strike_price") or 0,
-        )
-
-        def _chain_rows(contracts):
-            return [
-                {
-                    "Strike": f"${c['strike_price']:.2f}" if c.get("strike_price") else "—",
-                    "Last": f"${c['close_price']:.2f}" if c.get("close_price") else "—",
-                    "OI": f"{c['open_interest']:,}" if c.get("open_interest") else "—",
-                    "Symbol": c["symbol"],
-                }
-                for c in contracts
-            ]
-
-        ch1, ch2 = st.columns(2)
-        with ch1:
-            st.markdown("**Calls**")
-            if calls:
-                st.dataframe(
-                    pd.DataFrame(_chain_rows(calls)).drop(columns=["Symbol"]),
-                    use_container_width=True, hide_index=True,
-                )
-            else:
-                st.caption("No call contracts")
-        with ch2:
-            st.markdown("**Puts**")
-            if puts:
-                st.dataframe(
-                    pd.DataFrame(_chain_rows(puts)).drop(columns=["Symbol"]),
-                    use_container_width=True, hide_index=True,
-                )
-            else:
-                st.caption("No put contracts")
-
-        # ── Order form ────────────────────────────────────────────────────────
-        st.divider()
-        st.subheader("Place Option Order")
-
-        tradable = [c for c in exp_contracts if c.get("tradable", True)]
-        if not tradable:
-            st.warning("No tradable contracts for this expiration")
-        else:
-            def _contract_label(c):
-                last = f" · last ${c['close_price']:.2f}" if c.get("close_price") else ""
-                oi = f" · OI {c['open_interest']:,}" if c.get("open_interest") else ""
-                return (
-                    f"{c.get('contract_type','?').upper()} "
-                    f"${c.get('strike_price', 0):.2f}"
-                    f"{last}{oi}"
-                )
-
-            contract_map = {_contract_label(c): c for c in tradable}
-
-            with st.form("options_order", clear_on_submit=False):
-                selected_label = st.selectbox(
-                    "Contract", list(contract_map.keys()), key="opt_contract_sel"
-                )
-                fc1, fc2 = st.columns(2)
-                with fc1:
-                    qty = st.number_input(
-                        "Qty (contracts)", min_value=1, max_value=50, value=1, step=1
-                    )
-                with fc2:
-                    side = st.selectbox("Side", ["buy", "sell"], key="opt_side")
-
-                # Cost preview — prominent so the ×100 multiplier is unmissable
-                selected_c = contract_map[selected_label]
-                if selected_c.get("close_price"):
-                    premium = selected_c["close_price"]
-                    total_cost = premium * 100 * qty
-                    if side == "buy":
-                        st.info(
-                            f"Estimated cost: ${premium:.2f} premium "
-                            f"× 100 multiplier × {int(qty)} contract(s) "
-                            f"= **${total_cost:,.2f}**"
-                        )
-                    else:
-                        st.info(
-                            f"Estimated proceeds: ${premium:.2f} premium "
-                            f"× 100 × {int(qty)} = **${total_cost:,.2f}**"
-                        )
-
-                submitted = st.form_submit_button(
-                    "Submit Option Order", type="primary", use_container_width=True
-                )
-                if submitted:
-                    c = selected_c
-                    payload = {
-                        "contract_symbol": c["symbol"],
-                        "underlying_symbol": c["underlying_symbol"],
-                        "contract_type": c.get("contract_type", ""),
-                        "expiration_date": c["expiration_date"],
-                        "strike_price": c.get("strike_price", 0),
-                        "side": side,
-                        "qty": int(qty),
-                    }
-                    res = _post("/options/order", json=payload)
-                    if res.get("ok"):
-                        st.success(
-                            f"Order submitted! "
-                            f"{c.get('contract_type','').upper()} "
-                            f"${c.get('strike_price'):.2f} "
-                            f"exp {c['expiration_date']} × {int(qty)}"
-                        )
-                    else:
-                        st.error(f"Failed: {res.get('error', 'unknown error')}")
-
-    # ── Recent option trades ──────────────────────────────────────────────────
+    _render_options_engine_panel()
     st.divider()
-    st.subheader("Recent Option Trades")
-    opt_trades = _get("/options/trades", limit=50) or []
-    if opt_trades:
-        df = pd.DataFrame(opt_trades)
-        cols = [
-            "created_at", "underlying_symbol", "contract_type", "strike_price",
-            "expiration_date", "side", "qty", "filled_avg_price", "status",
-            "contract_symbol", "trading_mode",
-        ]
-        cols = [c for c in cols if c in df.columns]
-        st.dataframe(df[cols], use_container_width=True, hide_index=True)
+
+    sub_view = st.radio(
+        "View",
+        options=["Open Positions", "Chain Explorer", "IV Surface", "Recent Trades"],
+        horizontal=True,
+        key="opt_subview",
+    )
+
+    if sub_view == "Open Positions":
+        _render_open_options_positions()
+    elif sub_view == "Chain Explorer":
+        _render_options_chain_explorer()
+    elif sub_view == "IV Surface":
+        _render_iv_surface()
     else:
-        st.info("No option trades yet")
+        # Recent Trades (keep existing functionality)
+        opt_trades = _get("/options/trades", limit=50) or []
+        if opt_trades:
+            df = pd.DataFrame(opt_trades)
+            cols = [
+                "created_at", "underlying_symbol", "contract_type", "strike_price",
+                "expiration_date", "side", "qty", "filled_avg_price", "status",
+                "contract_symbol", "trading_mode",
+            ]
+            cols = [c for c in cols if c in df.columns]
+            st.dataframe(df[cols], use_container_width=True, hide_index=True)
+        else:
+            st.info("No option trades yet")
 
 
 # ── Config tab ────────────────────────────────────────────────────────────────
