@@ -93,18 +93,39 @@ class OptionTrade(Base):
     id = Column(Integer, primary_key=True)
     client_order_id = Column(String(64), unique=True, nullable=False)
     broker_order_id = Column(String(64))
-    contract_symbol = Column(String(30), nullable=False)        # OCC symbol
+    contract_symbol = Column(String(30), nullable=False)
     underlying_symbol = Column(String(20), nullable=False, index=True)
-    contract_type = Column(String(10), nullable=False)          # call | put
+    contract_type = Column(String(10), nullable=False)
     expiration_date = Column(Date, nullable=False)
     strike_price = Column(Numeric(18, 4), nullable=False)
-    side = Column(String(10), nullable=False)                   # buy | sell
+    side = Column(String(10), nullable=False)
     qty = Column(Integer, nullable=False)
     filled_qty = Column(Integer, default=0)
-    filled_avg_price = Column(Numeric(18, 4))                   # per-contract premium
+    filled_avg_price = Column(Numeric(18, 4))
     status = Column(String(20), nullable=False, default="pending")
     trading_mode = Column(String(10), nullable=False, default="paper")
     source = Column(String(20), default="manual")
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     filled_at = Column(DateTime(timezone=True))
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+    # entry snapshot (autonomous flow only)
+    entry_delta = Column(Numeric(8, 4))
+    entry_gamma = Column(Numeric(8, 4))
+    entry_theta = Column(Numeric(8, 4))
+    entry_vega = Column(Numeric(8, 4))
+    entry_iv = Column(Numeric(8, 4))
+    entry_bid = Column(Numeric(18, 4))
+    entry_ask = Column(Numeric(18, 4))
+    entry_mid = Column(Numeric(18, 4))
+    premium_paid = Column(Numeric(18, 4))
+    dte_at_entry = Column(Integer)
+
+    # exit data
+    exit_mid = Column(Numeric(18, 4))
+    exit_dte = Column(Integer)
+    exit_reason = Column(String(50))
+
+    # context
+    underlying_score = Column(Integer)
+    underlying_signals = Column(ARRAY(Text))

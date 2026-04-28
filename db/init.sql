@@ -70,20 +70,52 @@ CREATE TABLE IF NOT EXISTS option_trades (
     broker_order_id     VARCHAR(64),
     contract_symbol     VARCHAR(30) NOT NULL,
     underlying_symbol   VARCHAR(20) NOT NULL,
-    contract_type       VARCHAR(10) NOT NULL,          -- call | put
+    contract_type       VARCHAR(10) NOT NULL,
     expiration_date     DATE NOT NULL,
     strike_price        NUMERIC(18, 4) NOT NULL,
-    side                VARCHAR(10) NOT NULL,           -- buy | sell
+    side                VARCHAR(10) NOT NULL,
     qty                 INTEGER NOT NULL,
     filled_qty          INTEGER DEFAULT 0,
-    filled_avg_price    NUMERIC(18, 4),                -- per-contract premium
+    filled_avg_price    NUMERIC(18, 4),
     status              VARCHAR(20) NOT NULL DEFAULT 'pending',
     trading_mode        VARCHAR(10) NOT NULL DEFAULT 'paper',
     source              VARCHAR(20) DEFAULT 'manual',
+    entry_delta         NUMERIC(8, 4),
+    entry_gamma         NUMERIC(8, 4),
+    entry_theta         NUMERIC(8, 4),
+    entry_vega          NUMERIC(8, 4),
+    entry_iv            NUMERIC(8, 4),
+    entry_bid           NUMERIC(18, 4),
+    entry_ask           NUMERIC(18, 4),
+    entry_mid           NUMERIC(18, 4),
+    premium_paid        NUMERIC(18, 4),
+    dte_at_entry        INTEGER,
+    exit_mid            NUMERIC(18, 4),
+    exit_dte            INTEGER,
+    exit_reason         VARCHAR(50),
+    underlying_score    INTEGER,
+    underlying_signals  TEXT[],
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     filled_at           TIMESTAMPTZ,
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Additive migration for existing option_trades installs
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS entry_delta        NUMERIC(8, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS entry_gamma        NUMERIC(8, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS entry_theta        NUMERIC(8, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS entry_vega         NUMERIC(8, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS entry_iv           NUMERIC(8, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS entry_bid          NUMERIC(18, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS entry_ask          NUMERIC(18, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS entry_mid          NUMERIC(18, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS premium_paid       NUMERIC(18, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS dte_at_entry       INTEGER;
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS exit_mid           NUMERIC(18, 4);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS exit_dte           INTEGER;
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS exit_reason        VARCHAR(50);
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS underlying_score   INTEGER;
+ALTER TABLE option_trades ADD COLUMN IF NOT EXISTS underlying_signals TEXT[];
 
 CREATE INDEX IF NOT EXISTS idx_trades_symbol         ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_created_at     ON trades(created_at DESC);
