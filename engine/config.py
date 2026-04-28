@@ -86,5 +86,39 @@ class TradingConfig:
     def screener(self) -> dict:
         return self._raw.get("screener", {})
 
+    @property
+    def options(self) -> dict:
+        return self._raw.get("options", {})
+
+    def validate_options_config(self) -> list[str]:
+        """Return validation error messages. Empty list means valid."""
+        errors: list[str] = []
+        opts = self.options
+        if not opts:
+            return errors
+
+        min_dte = int(opts.get("min_dte", 0))
+        dte_floor = int(opts.get("dte_floor", 0))
+        if min_dte <= dte_floor:
+            errors.append(
+                f"options.min_dte ({min_dte}) must be > options.dte_floor ({dte_floor})"
+            )
+
+        target = float(opts.get("target_delta", 0))
+        tol = float(opts.get("delta_tolerance", 0))
+        if not (0 < target < 1):
+            errors.append(f"options.target_delta must be in (0, 1); got {target}")
+        if tol <= 0 or tol >= target:
+            errors.append(
+                f"options.delta_tolerance ({tol}) must be > 0 and < target_delta ({target})"
+            )
+
+        if int(opts.get("max_option_positions", 0)) <= 0:
+            errors.append("options.max_option_positions must be > 0")
+        if float(opts.get("max_position_pct", 0)) <= 0:
+            errors.append("options.max_position_pct must be > 0")
+
+        return errors
+
     def raw(self) -> dict:
         return self._raw

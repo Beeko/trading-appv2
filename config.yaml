@@ -72,3 +72,28 @@ wsb_scanner:
   min_mentions: 3         # ignore tickers mentioned fewer than this many times
   subreddits:
     - wallstreetbets
+
+options:
+  enabled: true
+  scan_interval_seconds: 300
+  monitor_interval_seconds: 60
+  bar_timeframe: "5Min"
+  lookback_bars: 78
+  min_score_to_trade: 3
+  max_option_positions: 5
+  max_position_pct: 0.02
+  target_delta: 0.40
+  delta_tolerance: 0.05
+  min_dte: 28
+  max_dte: 45
+  profit_target_pct: 0.50
+  stop_loss_pct: 0.50
+  dte_floor: 21
+  liquidity:
+    max_spread_pct: 0.20
+    min_volume: 10
+    min_open_interest: 100
+  limit_order:
+    fill_timeout_seconds: 120
+    exit_retry_max: 3
+    exit_retry_price_step_pct: 0.05
