@@ -269,13 +269,36 @@ async def option_chain(
     request: Request,
     days_out: int = 45,
     type: str = "",
+    enrich: bool = True,
 ):
     contracts = await request.app.state.alpaca.get_option_chain(
         underlying=symbol.upper(),
         days_out=days_out,
         contract_type=type.lower() if type.lower() in ("call", "put") else None,
     )
-    return {"symbol": symbol.upper(), "count": len(contracts), "contracts": contracts}
+    if not enrich or not contracts:
+        return {"symbol": symbol.upper(), "count": len(contracts), "contracts": contracts}
+
+    syms = [c["symbol"] for c in contracts if c.get("symbol")]
+    snapshots = await request.app.state.alpaca.get_option_snapshots(syms)
+
+    enriched = []
+    for c in contracts:
+        snap = snapshots.get(c["symbol"], {})
+        enriched.append({
+            **c,
+            "delta": snap.get("delta"),
+            "gamma": snap.get("gamma"),
+            "theta": snap.get("theta"),
+            "vega": snap.get("vega"),
+            "iv": snap.get("implied_volatility"),
+            "bid": snap.get("bid"),
+            "ask": snap.get("ask"),
+            "mid": snap.get("mid"),
+            "spread_pct": snap.get("spread_pct"),
+            "volume": snap.get("volume"),
+        })
+    return {"symbol": symbol.upper(), "count": len(enriched), "contracts": enriched}
 
 
 class OptionOrderRequest(BaseModel):
@@ -307,6 +330,129 @@ async def submit_option_order(req: OptionOrderRequest, request: Request):
 @router.get("/options/trades")
 async def list_option_trades(request: Request, limit: int = 50):
     return await request.app.state.repo.list_recent_option_trades(limit=limit)
+
+
+# ── options engine control ────────────────────────────────────────────────────
+
+@router.get("/options/engine/status")
+async def options_engine_status(request: Request):
+    return request.app.state.options_engine.snapshot_status()
+
+
+@router.post("/options/engine/pause")
+async def options_engine_pause(request: Request):
+    request.app.state.options_engine.pause()
+    await request.app.state.repo.log_event("options_engine_paused", "via API")
+    return {"ok": True, "paused": True}
+
+
+@router.post("/options/engine/resume")
+async def options_engine_resume(request: Request):
+    request.app.state.options_engine.resume()
+    await request.app.state.repo.log_event("options_engine_resumed", "via API")
+    return {"ok": True, "paused": False}
+
+
+@router.get("/options/positions")
+async def list_open_options(request: Request):
+    """Open option positions enriched with current Greeks, mid, P&L, DTE, next exit trigger."""
+    open_trades = await request.app.state.repo.list_open_option_trades()
+    if not open_trades:
+        return {"count": 0, "positions": []}
+
+    syms = [t["contract_symbol"] for t in open_trades]
+    snapshots = await request.app.state.alpaca.get_option_snapshots(syms)
+
+    from datetime import date as _date
+    today = _date.today()
+
+    cfg = request.app.state.config.options
+    profit_pct = float(cfg.get("profit_target_pct", 0.50))
+    stop_pct = float(cfg.get("stop_loss_pct", 0.50))
+    dte_floor = int(cfg.get("dte_floor", 21))
+
+    out = []
+    for t in open_trades:
+        snap = snapshots.get(t["contract_symbol"], {})
+        try:
+            exp = _date.fromisoformat(t["expiration_date"])
+            dte = (exp - today).days
+        except (ValueError, TypeError):
+            dte = None
+        current_mid = snap.get("mid")
+        entry_mid = t.get("entry_mid")
+        pnl_pct = None
+        if entry_mid and current_mid:
+            pnl_pct = (current_mid - entry_mid) / entry_mid
+
+        next_trigger = None
+        if dte is not None and dte < dte_floor:
+            next_trigger = "dte_floor"
+        elif pnl_pct is not None:
+            if pnl_pct >= profit_pct:
+                next_trigger = "profit_target"
+            elif pnl_pct <= -stop_pct:
+                next_trigger = "stop_loss"
+
+        out.append({
+            **t,
+            "current_delta": snap.get("delta"),
+            "current_gamma": snap.get("gamma"),
+            "current_theta": snap.get("theta"),
+            "current_vega": snap.get("vega"),
+            "current_iv": snap.get("implied_volatility"),
+            "current_bid": snap.get("bid"),
+            "current_ask": snap.get("ask"),
+            "current_mid": current_mid,
+            "dte_remaining": dte,
+            "pnl_pct": pnl_pct,
+            "next_trigger": next_trigger,
+        })
+
+    return {"count": len(out), "positions": out}
+
+
+@router.get("/options/iv-surface/{symbol}")
+async def iv_surface(symbol: str, request: Request, days_out: int = 60):
+    """IV-by-strike for nearest 3 expirations. On-demand, no persistence."""
+    contracts = await request.app.state.alpaca.get_option_chain(
+        underlying=symbol.upper(),
+        days_out=days_out,
+        contract_type=None,
+    )
+    if not contracts:
+        return {"symbol": symbol.upper(), "expirations": []}
+
+    expirations = sorted({c["expiration_date"] for c in contracts if c.get("expiration_date")})
+    expirations = expirations[:3]
+
+    syms = [c["symbol"] for c in contracts if c.get("expiration_date") in expirations]
+    snapshots = await request.app.state.alpaca.get_option_snapshots(syms)
+
+    by_exp: dict[str, list[dict]] = {e: [] for e in expirations}
+    for c in contracts:
+        exp = c.get("expiration_date")
+        if exp not in by_exp:
+            continue
+        snap = snapshots.get(c["symbol"], {})
+        if snap.get("implied_volatility") is None:
+            continue
+        by_exp[exp].append({
+            "strike": c["strike_price"],
+            "type": c["contract_type"],
+            "iv": snap.get("implied_volatility"),
+        })
+
+    return {
+        "symbol": symbol.upper(),
+        "expirations": [
+            {
+                "expiration_date": e,
+                "points": sorted(by_exp[e], key=lambda x: x["strike"]),
+            }
+            for e in expirations if by_exp[e]
+        ],
+    }
 
 
 # ── config ───────────────────────────────────────────────────────────────────
